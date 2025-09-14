@@ -1,0 +1,16 @@
+{
+  "displayName": "DocuSnap",
+  "description": "Insert @link@ to images/docs with hover preview and confirm-on-paste.",
+  "config.title": "DocuSnap",
+  "config.assetsDir.desc": "Directory to store inserted images/docs. Can be relative to workspace or absolute path.",
+  "config.overridePaste.desc": "When enabled, override Ctrl+V in editor with confirm-on-paste (@link@).",
+  "cmd.insertImage": "Insert description image",
+  "cmd.insertDoc": "Insert description document",
+  "cmd.insertImageFromClipboard": "Insert image/document from clipboard",
+  "cmd.smartPaste": "Confirm paste as @link@"
+  ,
+  "submenu.title": "DocuSnap"
+  ,
+  "cmd.cleanInvalid": "Clean invalid links",
+  "category.title": "DocuSnap"
+}

@@ -1,0 +1,163 @@
+{
+	"name": "docusnap-assets",
+		"displayName": "%displayName%",
+		"description": "%description%",
+	"version": "0.1.0",
+	"publisher": "jsnjjnzx",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.84.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"icon": "images/icon.png",
+		"keywords": [
+			"assets",
+			"hover",
+			"image",
+			"documentation",
+			"code-annotation"
+		],
+	"main": "./out/extension.js",
+	"activationEvents": [
+		"onStartupFinished",
+		"onCommand:docusnap.insertImage",
+		"onCommand:docusnap.insertDoc",
+		"onCommand:docusnap.insertImageFromClipboard",
+		"onCommand:docusnap.smartPaste"
+	],
+		"contributes": {
+				"submenus": [
+					{
+							"id": "docusnap.menu",
+						"label": "%submenu.title%"
+					}
+				],
+			"configuration": {
+				"title": "%config.title%",
+					"properties": {
+							"docuSnap.assetsDir": {
+								"type": "string",
+								"default": ".vscode/code-assets",
+								"description": "%config.assetsDir.desc%"
+							},
+							"docuSnap.overridePaste": {
+								"type": "boolean",
+								"default": false,
+								"description": "%config.overridePaste.desc%"
+							},
+							"docuSnap.searchIncludeGlobs": {
+								"type": "array",
+								"items": { "type": "string" },
+								"default": [
+									"**/*.{ts,tsx,js,jsx,mjs,cjs,md,mdx,txt,html,css,scss,less,json,py,go,java,cs,cpp,c,h,hpp,rs,rb,php,kt,scala,sql,lua,sh,ps1,bat,yaml,yml,toml}"
+								],
+								"description": "DocuSnap 扫描 @link@ 的包含文件模式（Glob）。可以是多个，命中越少越快。"
+							},
+							"docuSnap.searchExcludeGlobs": {
+								"type": "array",
+								"items": { "type": "string" },
+								"default": [
+									"**/node_modules/**",
+									"**/.git/**",
+									"**/.svn/**",
+									"**/.hg/**",
+									"**/.vscode/**",
+									"**/out/**",
+									"**/dist/**",
+									"**/build/**",
+									"**/coverage/**"
+								],
+								"description": "DocuSnap 扫描 @link@ 的排除文件/目录模式（Glob）。默认排除大型目录。"
+							}
+
+					}
+		},
+				"commands": [
+			{
+						"command": "docusnap.insertImage",
+					"title": "%cmd.insertImage%",
+				"category": "%category.title%"
+			},
+			{
+						"command": "docusnap.insertDoc",
+					"title": "%cmd.insertDoc%",
+				"category": "%category.title%"
+				},
+				{
+							"command": "docusnap.insertImageFromClipboard",
+					"title": "%cmd.insertImageFromClipboard%",
+					"category": "%category.title%"
+				},
+				{
+							"command": "docusnap.smartPaste",
+					"title": "%cmd.smartPaste%",
+					"category": "%category.title%"
+				},
+				{
+							"command": "docusnap.cleanInvalidLinks",
+					"title": "%cmd.cleanInvalid%",
+					"category": "%category.title%"
+			}
+		],
+			"keybindings": [
+				{
+							"command": "docusnap.smartPaste",
+					"key": "ctrl+v",
+					"win": "ctrl+v",
+					"linux": "ctrl+v",
+					"mac": "cmd+v",
+							"when": "editorTextFocus && config.docuSnap.overridePaste"
+				}
+			],
+		"menus": {
+							"editor/context": [
+						{
+									"submenu": "docusnap.menu",
+							"group": "navigation@70",
+							"when": "editorTextFocus"
+						}
+					],
+							"docusnap.menu": [
+						{
+									"command": "docusnap.insertImage",
+							"group": "1_insert"
+						},
+						{
+									"command": "docusnap.insertDoc",
+							"group": "1_insert"
+						},
+						{
+									"command": "docusnap.insertImageFromClipboard",
+							"group": "1_insert"
+								},
+								{
+											"command": "docusnap.cleanInvalidLinks",
+									"group": "9_cleanup"
+						}
+					]
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"package": "vsce package",
+		"publish": "vsce publish"
+	},
+	"devDependencies": {
+		"@types/node": "^20.14.10",
+		"@types/vscode": "^1.84.0",
+		"typescript": "^5.5.4",
+		"vsce": "^2.15.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/jsnjjnzx/DocuSnap.git"
+	},
+	"homepage": "https://github.com/jsnjjnzx/DocuSnap",
+	"bugs": {
+		"url": "https://github.com/jsnjjnzx/DocuSnap/issues"
+	}
+}

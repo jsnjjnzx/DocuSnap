@@ -1,0 +1,9 @@
+**/*.ts
+**/*.map
+.vscode/**
+.git/**
+**/tsconfig.json
+**/.eslintrc*
+**/.prettierrc*
+**/*.test.*
+**/__tests__/**

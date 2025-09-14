@@ -1,0 +1,16 @@
+{
+  "displayName": "注释快贴",
+  "description": "在代码中以 @link@ 标记插入图片/文档，并支持悬浮预览与确认粘贴。",
+  "config.title": "注释快贴",
+  "config.assetsDir.desc": "存放插入图片/文档的工作区相对目录。可以是相对路径（相对工作区根）或绝对路径。",
+  "config.overridePaste.desc": "启用后，用确认式粘贴（@link@）覆盖 Ctrl+V（仅编辑器内）。",
+  "cmd.insertImage": "插入代码描述图片",
+  "cmd.insertDoc": "插入代码描述文档",
+  "cmd.insertImageFromClipboard": "从剪贴板插入代码描述图片/文档",
+  "cmd.smartPaste": "确认式粘贴为 @link@"
+  ,
+  "submenu.title": "注释快贴"
+  ,
+  "cmd.cleanInvalid": "清理无效链接",
+  "category.title": "注释快贴"
+}
