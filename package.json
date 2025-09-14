@@ -2,7 +2,7 @@
 	"name": "docusnap-assets",
 		"displayName": "%displayName%",
 		"description": "%description%",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"publisher": "jsnjjnzx",
 	"license": "MIT",
 	"engines": {
@@ -25,9 +25,32 @@
 		"onCommand:docusnap.insertImage",
 		"onCommand:docusnap.insertDoc",
 		"onCommand:docusnap.insertImageFromClipboard",
-		"onCommand:docusnap.smartPaste"
+		"onCommand:docusnap.smartPaste",
+		"onView:docusnap.links",
+		"onCommand:docusnap.links.refresh",
+		"onCommand:docusnap.openLinkLocation",
+		"onCommand:docusnap.links.cleanFile",
+		"onCommand:docusnap.links.cleanSingle",
+	"onCommand:docusnap.links.toggleShowMissing"
 	],
 		"contributes": {
+                "viewsContainers": {
+                    "activitybar": [
+						{
+							"id": "docusnap",
+							"title": "%displayName%",
+							"icon": "images/links.svg"
+						}
+                    ]
+                },
+                "views": {
+					"docusnap": [
+                        {
+							"id": "docusnap.links",
+							"name": "%view.links%"
+                        }
+                    ]
+                },
 				"submenus": [
 					{
 							"id": "docusnap.menu",
@@ -99,6 +122,36 @@
 							"command": "docusnap.cleanInvalidLinks",
 					"title": "%cmd.cleanInvalid%",
 					"category": "%category.title%"
+		},
+			{
+				"command": "docusnap.links.refresh",
+				"title": "%cmd.links.refresh%",
+				"category": "%category.title%"
+			},
+			{
+				"command": "docusnap.openLinkLocation",
+				"title": "%cmd.links.openLocation%",
+				"category": "%category.title%"
+			},
+			{
+				"command": "docusnap.links.cleanFile",
+				"title": "%cmd.links.cleanFile%",
+				"category": "%category.title%"
+			},
+			{
+				"command": "docusnap.links.cleanSingle",
+				"title": "%cmd.links.cleanSingle%",
+				"category": "%category.title%"
+			},
+			{
+				"command": "docusnap.links.toggleShowMissing",
+				"title": "%cmd.links.toggleMissing%",
+				"category": "%category.title%"
+			},
+			{
+				"command": "docusnap.links.search",
+				"title": "%cmd.links.search%",
+				"category": "%category.title%"
 			}
 		],
 			"keybindings": [
@@ -135,6 +188,23 @@
 								{
 											"command": "docusnap.cleanInvalidLinks",
 									"group": "9_cleanup"
+					}
+				],
+					"view/title": [
+						{
+							"command": "docusnap.links.refresh",
+							"when": "view == docusnap.links",
+							"group": "2_docusnap@1"
+						},
+						{
+							"command": "docusnap.links.toggleShowMissing",
+							"when": "view == docusnap.links",
+							"group": "2_docusnap@2"
+						},
+						{
+							"command": "docusnap.links.cleanFile",
+							"when": "view == docusnap.links",
+							"group": "2_docusnap@3"
 						}
 					]
 		}

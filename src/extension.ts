@@ -7,7 +7,8 @@ import { exec } from 'child_process';
 // 仅保留：@link@ 标记，例如：
 // // @link@:images/foo.png（注释前缀随语言变化）
 // 注意：不要使用 \b 边界，因为 @ 前面通常是注释符或空白，\b 会导致匹配失败。
-const ASSET_TAG_LINK = /@link@\s*:\s*([^\s"'`]+)/;
+// 支持半角/全角冒号 & 引号包裹路径
+const ASSET_TAG_LINK = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/;
 
 // 规范化相对路径：去掉 ./ 或 / 前缀，\ -> /，Windows 下转小写
 function normalizeRel(p: string): string {
@@ -145,7 +146,7 @@ class AssetHoverProvider implements vscode.HoverProvider {
     // 仅匹配 @link@
     const mLink = ASSET_TAG_LINK.exec(line);
     if (mLink) {
-      rel = mLink[1];
+      rel = (mLink[1] || mLink[2] || mLink[3] || mLink[4]);
       const startCol = mLink.index;
       const endCol = startCol + mLink[0].length;
       range = new vscode.Range(new vscode.Position(position.line, startCol), new vscode.Position(position.line, endCol));
@@ -368,6 +369,13 @@ async function readFileText(uri: vscode.Uri): Promise<string> {
   }
 }
 
+// 优先读取已打开文档的内存文本（含未保存更改），否则回退到磁盘
+async function getTextForUri(uri: vscode.Uri): Promise<string> {
+  const opened = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+  if (opened) return opened.getText();
+  return await readFileText(uri);
+}
+
 async function collectWorkspaceFiles(glob: string, excludes?: string[]): Promise<vscode.Uri[]> {
   const excludeGlob = excludes && excludes.length ? `{${excludes.join(',')}}` : '**/node_modules/**';
   const files = await vscode.workspace.findFiles(glob, excludeGlob);
@@ -375,14 +383,15 @@ async function collectWorkspaceFiles(glob: string, excludes?: string[]): Promise
 }
 
 function findLinkRangeInDoc(doc: vscode.TextDocument, relNorm: string, nearLine?: number): vscode.Range | undefined {
-  const re = /@link@\s*:\s*([^\s"'`]+)/g;
+  const re = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/g;
   const tryLine = (ln: number): vscode.Range | undefined => {
     if (ln < 0 || ln >= doc.lineCount) return undefined;
     const txt = doc.lineAt(ln).text;
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(txt))) {
-      if (normalizeRel(m[1]) === relNorm) return new vscode.Range(new vscode.Position(ln, m.index), new vscode.Position(ln, m.index + m[0].length));
+      const relRaw = (m[1] || m[2] || m[3] || m[4]);
+      if (normalizeRel(relRaw) === relNorm) return new vscode.Range(new vscode.Position(ln, m.index), new vscode.Position(ln, m.index + m[0].length));
     }
     return undefined;
   };
@@ -437,6 +446,10 @@ async function handleCleanInvalidLinks() {
     const candidateSets = await Promise.all(includeGlobs.map(g => collectWorkspaceFiles(g, excludeGlobs)));
     const candidates = new Map<string, vscode.Uri>();
     for (const arr of candidateSets) for (const u of arr) candidates.set(u.fsPath, u);
+    // 并入已打开的文本文档（未保存更改也能被扫描）
+    for (const d of vscode.workspace.textDocuments) {
+      if (d.uri.scheme === 'file') candidates.set(d.uri.fsPath, d.uri);
+    }
     texts = Array.from(candidates.values());
   }
   if (scopeVal === 'file' && texts.length === 0) {
@@ -456,12 +469,12 @@ async function handleCleanInvalidLinks() {
         const uri = queue.shift()!;
         if (uri.fsPath.includes(`${path.sep}node_modules${path.sep}`)) continue;
         try {
-          const content = await readFileText(uri);
-          const re = /@link@\s*:\s*([^\s"'`]+)/g;
+          const content = await getTextForUri(uri);
+          const re = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/g;
           let m: RegExpExecArray | null;
           const matches: { idx: number; len: number; relRaw: string; relNorm: string }[] = [];
           while ((m = re.exec(content))) {
-            const relRaw = m[1];
+            const relRaw = (m[1] || m[2] || m[3] || m[4]);
             const relNorm = normalizeRel(relRaw);
             if (!isRelInAssets(relNorm, assetsRootDir)) continue;
             linkSet.add(relNorm);
@@ -504,10 +517,36 @@ async function handleCleanInvalidLinks() {
   const assetRelSet = new Set(allAssetFiles.map((abs) => normalizeRel(path.relative(assetsRootDir, abs).replace(/\\/g, '/'))));
 
   // 3) 计算坏链接与孤立附件
+  // 文件存在性检查：
+  // - 在 workspace 范围：优先使用 assetRelSet（O(1)），若未命中则回退到 fs.stat 双保险；
+  // - 在 file 范围：直接使用 fs.stat 检测。
+  async function assetExists(relNorm: string): Promise<boolean> {
+    if (scopeVal === 'workspace') {
+      if (assetRelSet.has(relNorm)) return true;
+      // 罕见情况下集合遗漏，兜底直接检查文件系统
+    }
+    const abs = path.join(assetsRootDir, relNorm);
+    try {
+      const st = await fs.promises.stat(abs);
+      return st.isFile() || st.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   const badLinks: { label: string; detail: string; action: 'unlink'; payload: { uri: vscode.Uri; range: vscode.Range; relNorm: string; line: number } }[] = [];
+  const allLinkItems: { filePath: string; link: { range: vscode.Range; relRaw: string; relNorm: string; uri: vscode.Uri; line: number } }[] = [];
   for (const [filePath, links] of fileToLinks.entries()) {
-    for (const l of links) {
-      if (!assetRelSet.has(l.relNorm)) {
+    for (const l of links) allLinkItems.push({ filePath, link: l });
+  }
+  const existConcurrency = Math.max(4, os.cpus()?.length ?? 4);
+  const existQueue = [...allLinkItems];
+  await Promise.all(Array.from({ length: existConcurrency }, async () => {
+    while (existQueue.length) {
+      const item = existQueue.shift()!;
+      const { filePath, link: l } = item;
+      const exists = await assetExists(l.relNorm);
+      if (!exists) {
         badLinks.push({
           label: `删除坏链接: ${l.relRaw}`,
           detail: `引用文件: ${path.relative(root, filePath).replace(/\\/g, '/')}`,
@@ -516,7 +555,7 @@ async function handleCleanInvalidLinks() {
         });
       }
     }
-  }
+  }));
   const orphanAssets: { label: string; detail: string; action: 'delete'; payload: { abs: string } }[] = [];
   for (const abs of allAssetFiles) {
     const relNorm = normalizeRel(path.relative(assetsRoot, abs).replace(/\\/g, '/'));
@@ -657,7 +696,290 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('docusnap.cleanInvalidLinks', handleCleanInvalidLinks),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, new AssetHoverProvider())
   );
+
+  // 注册链接树视图
+  const linksProvider = new LinksTreeProvider();
+  const treeView = vscode.window.createTreeView('docusnap.links', { treeDataProvider: linksProvider });
+  context.subscriptions.push(treeView);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('docusnap.links.refresh', () => linksProvider.refresh()),
+    vscode.commands.registerCommand('docusnap.openLinkLocation', async (payload: { uri: vscode.Uri; line: number; character?: number }) => {
+      if (!payload || !payload.uri) return;
+      const doc = await vscode.workspace.openTextDocument(payload.uri);
+      const editor = await vscode.window.showTextDocument(doc, { preview: false });
+      const pos = new vscode.Position(Math.max(0, payload.line), Math.max(0, payload.character ?? 0));
+      editor.selection = new vscode.Selection(pos, pos);
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    }),
+    vscode.commands.registerCommand('docusnap.links.cleanFile', async (node?: FileNode | { uri: vscode.Uri }) => {
+      const uri = node instanceof FileNode ? node.uri : node?.uri || vscode.window.activeTextEditor?.document.uri;
+      if (!uri) return;
+      await cleanInvalidLinksForFile(uri);
+      linksProvider.refresh();
+    }),
+    vscode.commands.registerCommand('docusnap.links.cleanSingle', async (node?: LinkNode) => {
+      if (!node) return;
+      try {
+        const doc = await vscode.workspace.openTextDocument(node.parent);
+        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+        const relNorm = normalizeRel(node.relRaw);
+        const range = findLinkRangeInDoc(doc, relNorm, node.line);
+        if (!range) return;
+        // 扩展删除范围（与批量清理一致）
+        const line = doc.lineAt(range.start.line);
+        const lineText = line.text;
+        const before = lineText.slice(0, range.start.character);
+        const after = lineText.slice(range.end.character);
+        let startCol = range.start.character;
+        const leftMatch = before.match(/(\s*)((?:\/\/)|#|--|;|%)\s*$/);
+        if (leftMatch) {
+          startCol = before.length - leftMatch[0].length;
+        } else if (/^\s*$/.test(before)) {
+          startCol = 0;
+        }
+        let endCol = range.end.character;
+        if (/^\s*$/.test(after)) endCol = lineText.length;
+        const delRange = new vscode.Range(new vscode.Position(range.start.line, startCol), new vscode.Position(range.end.line, endCol));
+        await editor.edit(b => b.delete(delRange));
+        await doc.save();
+      } finally {
+        linksProvider.refresh();
+      }
+    }),
+    vscode.commands.registerCommand('docusnap.links.toggleShowMissing', () => linksProvider.toggleShowMissing()),
+    vscode.commands.registerCommand('docusnap.links.search', async () => {
+      const q = await vscode.window.showInputBox({ prompt: 'Search links (supports substring)', placeHolder: 'e.g. images/logo or foo.png' });
+      linksProvider.setSearchQuery(q?.trim() || undefined);
+    })
+  );
+
+  // 自动刷新（监听 assets 与文档变化）
+  registerAutoRefresh(context, linksProvider);
 }
 
 export function deactivate() {}
+
+// ---------------- Links Tree View ----------------
+type TreeNode = FileNode | LinkNode;
+
+class FileNode extends vscode.TreeItem {
+  constructor(public readonly uri: vscode.Uri, public readonly count: number) {
+    super(vscode.workspace.asRelativePath(uri), vscode.TreeItemCollapsibleState.Collapsed);
+    this.resourceUri = uri;
+    this.iconPath = new vscode.ThemeIcon('file');
+    this.description = `${count}`;
+    this.contextValue = 'docusnap.file';
+  }
+}
+
+class LinkNode extends vscode.TreeItem {
+  constructor(
+    public readonly parent: vscode.Uri,
+    public readonly relRaw: string,
+    public readonly line: number,
+    public readonly exists: boolean
+  ) {
+    super(`@link@: ${relRaw}`, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon(exists ? 'link' : 'warning');
+    this.description = exists ? '' : 'missing';
+    this.command = {
+      command: 'docusnap.openLinkLocation',
+      title: 'Open Link Location',
+      arguments: [{ uri: parent, line }]
+    };
+    this.tooltip = `${vscode.workspace.asRelativePath(parent)}:${line + 1}`;
+    this.contextValue = exists ? 'docusnap.link' : 'docusnap.link.missing';
+  }
+}
+
+class LinksTreeProvider implements vscode.TreeDataProvider<TreeNode> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | null | void>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  private cache: Map<string, LinkNode[]> = new Map();
+  private showOnlyMissing = false;
+  private searchQuery: string | undefined;
+
+  refresh(): void {
+    this.cache.clear();
+    this._onDidChangeTreeData.fire();
+  }
+
+  toggleShowMissing(): void {
+    this.showOnlyMissing = !this.showOnlyMissing;
+    this._onDidChangeTreeData.fire();
+  }
+
+  setSearchQuery(q?: string): void {
+    this.searchQuery = q;
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element: TreeNode): vscode.TreeItem { return element; }
+
+  async getChildren(element?: TreeNode): Promise<TreeNode[]> {
+    if (!element) {
+      // 根：文件节点
+      await this.ensureScanned();
+      const items: FileNode[] = [];
+      for (const [fsPath, links] of this.cache.entries()) {
+        items.push(new FileNode(vscode.Uri.file(fsPath), links.length));
+      }
+      items.sort((a, b) => a.label!.toString().localeCompare(b.label!.toString()))
+      return items;
+    }
+    if (element instanceof FileNode) {
+      let list = this.cache.get(element.uri.fsPath) || [];
+      if (this.showOnlyMissing) list = list.filter(n => !n.exists);
+      if (this.searchQuery) {
+        const q = this.searchQuery.toLowerCase();
+        list = list.filter(n => n.relRaw.toLowerCase().includes(q));
+      }
+      // 以行号排序
+      return list.sort((a, b) => a.line - b.line);
+    }
+    return [];
+  }
+
+  private async ensureScanned(): Promise<void> {
+    if (this.cache.size > 0) return;
+    const result = await scanLinksAcrossWorkspace();
+    this.cache = result;
+  }
+}
+
+async function scanLinksAcrossWorkspace(): Promise<Map<string, LinkNode[]>> {
+  const ws = vscode.workspace.workspaceFolders?.[0];
+  const out = new Map<string, LinkNode[]>();
+  if (!ws) return out;
+
+  const cfg = vscode.workspace.getConfiguration();
+  const includeGlobs = cfg.get<string[]>('docuSnap.searchIncludeGlobs', ['**/*']);
+  const excludeGlobs = cfg.get<string[]>('docuSnap.searchExcludeGlobs', ['**/node_modules/**']);
+
+  const assetsRoot = getAssetsDir();
+  const assetsRootDir = assetsRoot || '';
+
+  // 收集候选文件，并合并已打开文档
+  const candidateSets = await Promise.all(includeGlobs.map(g => collectWorkspaceFiles(g, excludeGlobs)));
+  const fileSet = new Map<string, vscode.Uri>();
+  for (const arr of candidateSets) for (const u of arr) fileSet.set(u.fsPath, u);
+  for (const d of vscode.workspace.textDocuments) if (d.uri.scheme === 'file') fileSet.set(d.uri.fsPath, d.uri);
+  const texts = Array.from(fileSet.values());
+
+  const re = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/g;
+  const concurrency = Math.max(2, os.cpus()?.length ?? 4);
+  const queue = [...texts];
+
+  async function fileExistsAbs(abs: string): Promise<boolean> {
+    try { const st = await fs.promises.stat(abs); return st.isFile() || st.isDirectory(); } catch { return false; }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (queue.length) {
+      const uri = queue.shift()!;
+      if (uri.fsPath.includes(`${path.sep}node_modules${path.sep}`)) continue;
+      try {
+        const content = await getTextForUri(uri);
+        let m: RegExpExecArray | null;
+        const found: { relRaw: string; line: number; exists: boolean }[] = [];
+        while ((m = re.exec(content))) {
+          const relRaw = (m[1] || m[2] || m[3] || m[4]);
+          const relNorm = normalizeRel(relRaw);
+          if (!assetsRootDir || !isRelInAssets(relNorm, assetsRootDir)) continue;
+          const line = content.slice(0, m.index).split(/\r?\n/).length - 1;
+          const abs = assetsRootDir ? path.join(assetsRootDir, relNorm) : '';
+          const exists = assetsRootDir ? await fileExistsAbs(abs) : false;
+          found.push({ relRaw, line, exists });
+        }
+        const items = out.get(uri.fsPath) || [];
+        for (const f of found) items.push(new LinkNode(uri, f.relRaw, f.line, f.exists));
+        if (items.length) out.set(uri.fsPath, items);
+      } catch {}
+    }
+  }));
+
+  return out;
+}
+
+// 针对单个文件执行清理坏链接
+async function cleanInvalidLinksForFile(uri: vscode.Uri) {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  const content = doc.getText();
+  const assetsRoot = getAssetsDir();
+  if (!assetsRoot) {
+    vscode.window.showWarningMessage('未配置资产目录。');
+    return;
+  }
+  const re = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/g;
+  let m: RegExpExecArray | null;
+  const picks: { label: string; detail: string; range: vscode.Range }[] = [];
+  while ((m = re.exec(content))) {
+    const relRaw = (m[1] || m[2] || m[3] || m[4]);
+    const relNorm = normalizeRel(relRaw);
+    if (!isRelInAssets(relNorm, assetsRoot)) continue;
+    const line = content.slice(0, m.index).split(/\r?\n/).length - 1;
+    const abs = path.join(assetsRoot, relNorm);
+    const exists = await fs.promises.stat(abs).then(() => true).catch(() => false);
+    if (!exists) {
+      const range = findLinkRangeInDoc(doc, relNorm, line) || new vscode.Range(doc.positionAt(m.index), doc.positionAt(m.index + m[0].length));
+      picks.push({ label: `删除坏链接: ${relRaw}`, detail: `${vscode.workspace.asRelativePath(uri)}:${line + 1}`, range });
+    }
+  }
+  if (picks.length === 0) {
+    vscode.window.showInformationMessage('该文件未发现坏链接。');
+    return;
+  }
+  const selected = await vscode.window.showQuickPick(picks, { canPickMany: true, matchOnDetail: true, placeHolder: '选择要删除的坏链接（可多选）' });
+  if (!selected || selected.length === 0) return;
+  const editor = await vscode.window.showTextDocument(doc, { preview: false });
+  // 删除时从后往前，避免偏移
+  const sorted = selected.sort((a, b) => b.range.start.line - a.range.start.line);
+  for (const it of sorted) {
+    const line = doc.lineAt(it.range.start.line);
+    const lineText = line.text;
+    const before = lineText.slice(0, it.range.start.character);
+    const after = lineText.slice(it.range.end.character);
+    let startCol = it.range.start.character;
+    const leftMatch = before.match(/(\s*)((?:\/\/)|#|--|;|%)\s*$/);
+    if (leftMatch) startCol = before.length - leftMatch[0].length; else if (/^\s*$/.test(before)) startCol = 0;
+    let endCol = it.range.end.character;
+    if (/^\s*$/.test(after)) endCol = lineText.length;
+    const delRange = new vscode.Range(new vscode.Position(it.range.start.line, startCol), new vscode.Position(it.range.end.line, endCol));
+    await editor.edit(b => b.delete(delRange));
+  }
+  await doc.save();
+}
+
+function registerAutoRefresh(context: vscode.ExtensionContext, provider: LinksTreeProvider) {
+  const debounced = (() => {
+    let timer: NodeJS.Timeout | undefined;
+    return () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => provider.refresh(), 500);
+    };
+  })();
+
+  // 文档变更/保存/打开
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(debounced),
+    vscode.workspace.onDidSaveTextDocument(debounced),
+    vscode.workspace.onDidOpenTextDocument(debounced)
+  );
+
+  // 资产目录文件变化
+  const ws = vscode.workspace.workspaceFolders?.[0];
+  const assetsRoot = getAssetsDir();
+  if (ws && assetsRoot) {
+    let rel = assetsRoot;
+    const root = ws.uri.fsPath;
+    if (path.isAbsolute(rel)) rel = path.relative(root, rel);
+    const pattern = new vscode.RelativePattern(ws, path.posix.join(rel.replace(/\\/g, '/'), '**/*'));
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    watcher.onDidChange(debounced);
+    watcher.onDidCreate(debounced);
+    watcher.onDidDelete(debounced);
+    context.subscriptions.push(watcher);
+  }
+}
 

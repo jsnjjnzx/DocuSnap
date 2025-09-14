@@ -13,4 +13,12 @@
   ,
   "cmd.cleanInvalid": "Clean invalid links",
   "category.title": "DocuSnap"
+  ,
+  "view.links": "Links",
+  "cmd.links.refresh": "Refresh",
+  "cmd.links.openLocation": "Open Link Location",
+  "cmd.links.cleanFile": "Clean invalid links (File)",
+  "cmd.links.cleanSingle": "Remove this link",
+  "cmd.links.toggleMissing": "Toggle: Show only missing",
+  "cmd.links.search": "Search links..."
 }
