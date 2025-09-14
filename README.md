@@ -34,5 +34,8 @@
 3. 插件会在光标处插入形如 `<注释前缀> @link@:images/name.png` 的标记
 4. 将鼠标悬停在该标记上可预览
 
+## 捐赠
+  如果你觉得这个扩展对你有帮助，请喝一杯咖啡☕️呗：
+<img src="images/donate.png" alt="DocuSnap 捐赠" width="960" />
 ## 许可
 MIT

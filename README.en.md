@@ -34,5 +34,9 @@ DocuSnap lets you insert lightweight annotation tags in code comments like `@lin
 3. The extension inserts a tag like `<prefix> @link@:images/name.png` at the cursor.
 4. Hover the tag to preview.
 
+## Donation
+  If you find this extension helpful, please buy me a coffee☕️:
+<img src="images/donate.png" alt="DocuSnap Donate" width="960" />
+
 ## License
 MIT

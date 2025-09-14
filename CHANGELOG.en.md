@@ -1,5 +1,9 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.1.2] - 2025-09-14
+### Changed
+- Updated extension icon (clearer visuals and improved contrast for light/dark themes)
+
 ## [0.1.1] - 2025-09-14
 ### Improvements
 - Improved performance of "Clean invalid links" for large projects (added include/exclude globs, parallel parsing, and progress reporting)
