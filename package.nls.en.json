@@ -5,14 +5,12 @@
   "config.assetsDir.desc": "Directory to store inserted images/docs. Can be relative to workspace or absolute path.",
   "config.overridePaste.desc": "When enabled, override Ctrl+V in editor with confirm-on-paste (@link@).",
   "config.verboseLog.desc": "Emit more detailed debug logs (candidate samples, per-file scanning, deletion details, etc.). Usually keep off.",
-  "config.commentTokenMap.desc": "Map of file extensions to line comment tokens (used for inserting @link@ and limiting search scope).",
+  "config.commentTokenRules.desc": "Optional: rules array with higher priority. Examples: `{c,cpp,h}-{//}`, `{py,sh}-{#}`. Left: comma-separated extensions; Right: the comment token.",
   "cmd.insertImage": "Insert description image",
   "cmd.insertDoc": "Insert description document",
   "cmd.insertImageFromClipboard": "Insert image/document from clipboard",
-  "cmd.smartPaste": "Confirm paste as @link@"
-  ,
-  "submenu.title": "DocuSnap"
-  ,
+  "cmd.smartPaste": "Confirm paste as @link@",
+  "submenu.title": "DocuSnap",
   "cmd.cleanInvalid": "Clean invalid links",
   "cmd.showLog": "Open Debug Log",
   "category.title": "DocuSnap"
@@ -23,15 +21,10 @@
   "cmd.links.cleanFile": "Clean invalid links (File)",
   "cmd.links.cleanSingle": "Remove this link",
   "cmd.links.toggleMissing": "Toggle: Show only missing",
-  "cmd.links.search": "Search links..."
-  ,
+  "cmd.links.search": "Search links...",
   "view.preview": "Preview",
   "cmd.pinPreview": "Pin Preview",
-  "cmd.preview.clear": "Clear Preview"
-  ,
-  "view.tokens": "Comment Token Map",
-  "cmd.tokens.refresh": "Refresh",
-  "cmd.tokens.delete": "Delete"
-  ,
-  "cmd.diagnostics": "Diagnostics"
+  "cmd.preview.clear": "Clear Preview",
+  "cmd.diagnostics": "Diagnostics",
+  "cmd.deleteTokens": "Delete extensions from rules..."
 }

@@ -1,5 +1,14 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.2.3] - 2025-09-15
+### 变更
+- 迁移为“规则唯一来源”：移除 `docuSnap.commentTokenMap`，仅使用 `docuSnap.commentTokenRules` 解析扩展名→注释符。
+- 默认内置常见语言的规则组，开箱即用。
+- 删除命令更新：`docusnap.deleteCommentTokens` 现用于从规则中移除所选扩展名（按行重写规则，空行自动去除）。
+
+### 体验
+- 当当前文件扩展名未命中任何规则时，插入将阻断并弹窗提示，支持一键打开设置配置 `docuSnap.commentTokenRules`。
+
 ## [0.2.2] - 2025-09-15
 ### 新增
 - 新增设置 `docuSnap.verboseLog`：可开启“详细日志”，输出候选样本、逐文件扫描、删除明细等调试信息。

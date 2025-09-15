@@ -1,5 +1,14 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.3] - 2025-09-15
+### Changes
+- Move to “rules as the single source of truth”: remove `docuSnap.commentTokenMap` and rely on `docuSnap.commentTokenRules` only.
+- Ship sensible default rules for common languages out of the box.
+- Update deletion command: `docusnap.deleteCommentTokens` now removes selected extensions from rules (rewrite lines; drop empty ones).
+
+### UX
+- When the current file’s extension has no matching rule, insertion is blocked with a modal prompt and a one-click action to open Settings for `docuSnap.commentTokenRules`.
+
 ## [0.2.2] - 2025-09-15
 ### Added
 - New setting `docuSnap.verboseLog`: enable a “verbose logging” mode to emit candidate samples, per-file scanning, deletion details, etc.

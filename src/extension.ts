@@ -20,12 +20,46 @@ function normalizeRel(p: string): string {
   return r;
 }
 
+// ---- Comment token rules & map ----
+// Support syntax like: {c,cpp,h}-{//} or {py,sh}-{#}
+function parseCommentTokenRules(rules: string[] | undefined): Record<string, string> {
+  const map: Record<string, string> = {};
+  if (!rules || !Array.isArray(rules)) return map;
+  for (const raw of rules) {
+    const s = String(raw || '').trim();
+    if (!s) continue;
+    // Try two forms: {left}-{right} and {left}-{ {right} }
+    const m = /^\{([^}]+)\}\s*-\s*(?:\{([^}]+)\}|(.+))$/u.exec(s);
+    if (!m) continue;
+    const left = m[1];
+    const right = (m[2] ?? m[3] ?? '').trim();
+    if (!right) continue;
+    const exts = left.split(',').map(x => x.trim()).filter(Boolean);
+    for (const ext of exts) {
+      const key = ext.replace(/^\./, '').toLowerCase();
+      if (!key) continue;
+      map[key] = right;
+    }
+  }
+  return map;
+}
+
+function getEffectiveCommentMap(): Record<string, string> {
+  // Rules-only: compile rules to ext -> token map
+  try {
+    const cfg = vscode.workspace.getConfiguration();
+    const rulesArr = cfg.get<string[]>('docuSnap.commentTokenRules', []);
+    return parseCommentTokenRules(rulesArr);
+  } catch {
+    return {};
+  }
+}
+
 function getLineCommentToken(doc: vscode.TextDocument): string {
   const id = doc.languageId;
   // 优先读取配置的白名单映射（按扩展名匹配）
   try {
-    const cfg = vscode.workspace.getConfiguration();
-    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap');
+    const map = getEffectiveCommentMap();
     if (map) {
       const ext = path.extname(doc.fileName).toLowerCase().replace(/^\./, '');
       if (ext && map[ext]) return map[ext];
@@ -172,11 +206,37 @@ function insertAtCursor(editor: vscode.TextEditor, text: string) {
   });
 }
 
+function hasRuleForDocument(doc: vscode.TextDocument): boolean {
+  try {
+    const map = getEffectiveCommentMap();
+    const ext = path.extname(doc.fileName).toLowerCase().replace(/^\./, '');
+    return !!(ext && map && map[ext]);
+  } catch {
+    return false;
+  }
+}
+
+async function maybePromptConfigureRules(doc?: vscode.TextDocument): Promise<boolean> {
+  if (!doc) return true;
+  if (hasRuleForDocument(doc)) return true;
+  const choice = await vscode.window.showWarningMessage(
+    '未找到当前文件扩展名的注释规则。请在设置中配置 docuSnap.commentTokenRules 后再尝试插入。',
+    { modal: true },
+    '打开设置',
+    '取消'
+  );
+  if (choice === '打开设置') {
+    try { await vscode.commands.executeCommand('workbench.action.openSettings', 'docuSnap.commentTokenRules'); } catch {}
+  }
+  return false; // 阻断式：缺少规则时不继续插入
+}
+
 async function handleInsertImage() {
   const picks = await pickFiles({ Images: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'] });
   if (!picks || picks.length === 0) return;
   const copied = await copyIntoAssets(picks, 'images');
   const editor = vscode.window.activeTextEditor;
+  if (editor) { const ok = await maybePromptConfigureRules(editor.document); if (!ok) return; }
   const prefix = editor ? getLineCommentToken(editor.document) : '//';
   const tags = copied.map((c) => `${prefix} @link@:${c.rel}`).join('\n');
   if (editor) insertAtCursor(editor, tags);
@@ -187,6 +247,7 @@ async function handleInsertDoc() {
   if (!picks || picks.length === 0) return;
   const copied = await copyIntoAssets(picks, 'docs');
   const editor = vscode.window.activeTextEditor;
+  if (editor) { const ok = await maybePromptConfigureRules(editor.document); if (!ok) return; }
   const prefix = editor ? getLineCommentToken(editor.document) : '//';
   const tags = copied.map((c) => `${prefix} @link@:${c.rel}`).join('\n');
   if (editor) insertAtCursor(editor, tags);
@@ -517,6 +578,8 @@ async function handleSmartPaste() {
       '普通粘贴'
     );
     if (choice === '插入链接' || choice === '重命名插入') {
+  // 提示配置规则（若当前扩展未在规则中）；阻断式
+  if (editor) { const okRules = await maybePromptConfigureRules(editor.document); if (!okRules) return; }
       const wantRename = (choice === '重命名插入');
       const renamer = wantRename ? async (u: vscode.Uri, base: string) => {
         const ext = path.extname(u.fsPath).toLowerCase();
@@ -651,9 +714,8 @@ async function handleCleanInvalidLinks() {
   if (!scope) return;
   const scopeVal = (scope as any).value as 'file' | 'workspace';
 
-  // 固定 fast 扫描策略：基于 commentTokenMap 生成 include globs，使用默认 exclude，遵守 ignore 文件
-  const cfg = vscode.workspace.getConfiguration();
-  const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+  // 固定 fast 扫描策略：基于规则解析得到的扩展名生成 include globs，使用默认 exclude，遵守 ignore 文件
+  const map = getEffectiveCommentMap();
   const exts = Object.keys(map || {});
   const includeGlobs = exts.length ? [`**/*.{${exts.join(',')}}`] : ['**/*'];
   const excludeGlobs = getWorkspaceExcludes();
@@ -958,7 +1020,8 @@ async function handleInsertImageFromClipboard() {
     }
     if (uris.length) {
       const editor = vscode.window.activeTextEditor;
-      const prefix = editor ? getLineCommentToken(editor.document) : '//';
+  if (editor) { const ok = await maybePromptConfigureRules(editor.document); if (!ok) return; }
+  const prefix = editor ? getLineCommentToken(editor.document) : '//';
       const wantRename = await vscode.window.showQuickPick(['重命名附件', '跳过重命名'], { placeHolder: '是否为即将插入的附件重命名？' });
       const renamer = (wantRename === '重命名附件') ? async (u: vscode.Uri, base: string) => {
         const ext = path.extname(u.fsPath).toLowerCase();
@@ -1014,7 +1077,8 @@ async function handleInsertImageFromClipboard() {
     } : undefined;
     const copied = await copyIntoAssets([vscode.Uri.file(tmp)], 'images', renamer);
     const editor = vscode.window.activeTextEditor;
-    const prefix = editor ? getLineCommentToken(editor.document) : '//';
+  if (editor) { const ok = await maybePromptConfigureRules(editor.document); if (!ok) return; }
+  const prefix = editor ? getLineCommentToken(editor.document) : '//';
     const tags = copied.map((c) => `${prefix} @link@:${c.rel}`).join('\n');
     if (editor) insertAtCursor(editor, tags);
   } finally {
@@ -1051,8 +1115,7 @@ export function activate(context: vscode.ExtensionContext) {
     getChannel().show(true);
     const ws = vscode.workspace.workspaceFolders?.[0];
     const assets = getAssetsDir();
-    const cfg = vscode.workspace.getConfiguration();
-    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+  const map = getEffectiveCommentMap();
     const exts = Object.keys(map || {});
     const excludes = getWorkspaceExcludes();
     log('Diagnostics', { root: ws?.uri.fsPath, assetsDir: assets, exts, excludes });
@@ -1061,6 +1124,70 @@ export function activate(context: vscode.ExtensionContext) {
       const set = await collectWorkspaceFiles(include[0], excludes);
       const sample = set.slice(0, 50).map(u => vscode.workspace.asRelativePath(u));
       debugLog('Diagnostics candidates sample', { count: set.length, sample });
+    }
+  }));
+
+  // Delete comment token rules for selected extensions
+  context.subscriptions.push(vscode.commands.registerCommand('docusnap.deleteCommentTokens', async () => {
+    try {
+      const cfg = vscode.workspace.getConfiguration();
+      const rulesArr = cfg.get<string[]>('docuSnap.commentTokenRules', []);
+      // Parse rules into structures: collect ext set and a parsed list for editing
+      type RuleLine = { lefts: string[]; right: string };
+      const parsed: RuleLine[] = [];
+      const allExts = new Map<string, string>(); // ext -> token (last wins)
+      for (const raw of rulesArr) {
+        const s = String(raw || '').trim();
+        if (!s) continue;
+        const m = /^\{([^}]+)\}\s*-\s*(?:\{([^}]+)\}|(.+))$/u.exec(s);
+        if (!m) continue;
+        const left = m[1];
+        const right = (m[2] ?? m[3] ?? '').trim();
+        if (!right) continue;
+        const exts = left.split(',').map(x => x.trim()).filter(Boolean).map(x => x.replace(/^\./, '').toLowerCase());
+        parsed.push({ lefts: exts, right });
+        for (const e of exts) allExts.set(e, right);
+      }
+      const keys = Array.from(allExts.keys());
+      if (!keys.length) {
+        vscode.window.showInformationMessage('没有可删除的规则扩展名。');
+        return;
+      }
+      const picks = await vscode.window.showQuickPick(
+        keys.map(k => ({ label: k, description: allExts.get(k) })),
+        { canPickMany: true, placeHolder: '选择要从规则中移除的扩展名（可多选）' }
+      );
+      if (!picks || picks.length === 0) return;
+      const toDel = new Set(picks.map(p => p.label.replace(/^\./, '').toLowerCase()));
+
+      // Build next rules: remove selected exts from each line; drop empty lines
+      const nextRules: string[] = [];
+      for (const line of parsed) {
+        const lefts = line.lefts.filter(e => !toDel.has(e));
+        if (lefts.length === 0) continue;
+        nextRules.push(`{${lefts.join(',')}}-{${line.right}}`);
+      }
+
+      // Preserve configuration target (folder/workspace/global)
+      const inspect = cfg.inspect<string[]>('docuSnap.commentTokenRules');
+      const target: vscode.ConfigurationTarget | undefined = (() => {
+        if (!inspect) return vscode.ConfigurationTarget.Workspace;
+        if (inspect.workspaceFolderValue) return vscode.ConfigurationTarget.WorkspaceFolder;
+        if (inspect.workspaceValue) return vscode.ConfigurationTarget.Workspace;
+        return vscode.ConfigurationTarget.Global;
+      })();
+
+      const base: string[] = (target === vscode.ConfigurationTarget.WorkspaceFolder && inspect?.workspaceFolderValue)
+        || (target === vscode.ConfigurationTarget.Workspace && inspect?.workspaceValue)
+        || (target === vscode.ConfigurationTarget.Global && inspect?.globalValue)
+        || rulesArr;
+
+      // If no parsed lines (e.g., all were invalid), but there were base lines, we should set to [] when deletions selected
+      const finalRules = parsed.length ? nextRules : [];
+      await cfg.update('docuSnap.commentTokenRules', finalRules, target);
+      vscode.window.showInformationMessage(`已从规则中移除 ${toDel.size} 个扩展名。`);
+    } catch (e) {
+      vscode.window.showErrorMessage('删除规则失败：' + (e as Error).message);
     }
   }));
 
@@ -1162,45 +1289,6 @@ export function activate(context: vscode.ExtensionContext) {
   // 自动刷新（监听 assets 与文档变化）
   registerAutoRefresh(context, linksProvider);
 
-  // Comment Token Map 管理视图
-  const tokensProvider = new TokensTreeProvider();
-  const tokenView = vscode.window.createTreeView('docusnap.tokens', { treeDataProvider: tokensProvider });
-  context.subscriptions.push(tokenView);
-  // 当配置发生变化时自动刷新
-  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration('docuSnap.commentTokenMap')) {
-      tokensProvider.refresh();
-    }
-  }));
-  context.subscriptions.push(
-    vscode.commands.registerCommand('docusnap.tokens.refresh', () => tokensProvider.refresh()),
-    vscode.commands.registerCommand('docusnap.tokens.delete', async (node?: TokenNode) => {
-      if (!node) return;
-      const ok = await vscode.window.showWarningMessage(`确定删除扩展名 “.${node.ext}” 的注释符映射吗？`, { modal: true }, '删除');
-      if (ok !== '删除') return;
-      const cfg = vscode.workspace.getConfiguration();
-      const inspect = cfg.inspect<Record<string, string>>('docuSnap.commentTokenMap');
-      // 读取各层的对象
-      const folderVal = inspect?.workspaceFolderValue;
-      const wsVal = inspect?.workspaceValue;
-      const userVal = inspect?.globalValue;
-      let target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Workspace;
-      let base: Record<string, string> | undefined = undefined;
-      if (folderVal && node.ext in folderVal) { target = vscode.ConfigurationTarget.WorkspaceFolder; base = folderVal; }
-      else if (wsVal && node.ext in wsVal) { target = vscode.ConfigurationTarget.Workspace; base = wsVal; }
-      else if (userVal && node.ext in userVal) { target = vscode.ConfigurationTarget.Global; base = userVal; }
-      else {
-        // 如果都不包含，则从合并值中删除并写入工作区，避免污染用户默认
-        const merged = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
-        base = merged;
-        target = vscode.ConfigurationTarget.Workspace;
-      }
-      const newMap: Record<string, string> = { ...(base || {}) };
-      delete newMap[node.ext];
-      await cfg.update('docuSnap.commentTokenMap', newMap, target);
-      tokensProvider.refresh();
-    })
-  );
 }
 
 export function deactivate() {}
@@ -1299,8 +1387,7 @@ async function scanLinksAcrossWorkspace(): Promise<Map<string, LinkNode[]>> {
   const out = new Map<string, LinkNode[]>();
   if (!ws) return out;
 
-  const cfg = vscode.workspace.getConfiguration();
-  const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+  const map = getEffectiveCommentMap();
   const exts = Object.keys(map || {});
   const includeGlobs = exts.length ? [`**/*.{${exts.join(',')}}`] : ['**/*'];
   const excludeGlobs = getWorkspaceExcludes();
@@ -1431,29 +1518,5 @@ function registerAutoRefresh(context: vscode.ExtensionContext, provider: LinksTr
   }
 }
 
-// ---------------- Tokens View ----------------
-class TokenNode extends vscode.TreeItem {
-  constructor(public readonly ext: string, public readonly token: string) {
-    super(`.${ext} → ${token}`, vscode.TreeItemCollapsibleState.None);
-    this.contextValue = 'docusnap.token';
-    this.iconPath = new vscode.ThemeIcon('symbol-constant');
-    this.tooltip = `.${ext} uses '${token}'`;
-    // 展示内联删除按钮由菜单贡献点控制
-  }
-}
-
-class TokensTreeProvider implements vscode.TreeDataProvider<TokenNode> {
-  private _onDidChangeTreeData = new vscode.EventEmitter<TokenNode | undefined | null | void>();
-  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-
-  refresh(): void { this._onDidChangeTreeData.fire(); }
-  getTreeItem(el: TokenNode): vscode.TreeItem { return el; }
-  getChildren(): Thenable<TokenNode[]> {
-    const cfg = vscode.workspace.getConfiguration();
-    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
-    const items = Object.entries(map || {}).map(([ext, token]) => new TokenNode(ext, token));
-    items.sort((a, b) => a.ext.localeCompare(b.ext));
-    return Promise.resolve(items);
-  }
-}
+// Tokens 侧边视图已移除：映射的查看与删除改为走设置界面（Settings → DocuSnap: Comment Token Map）
 

@@ -5,14 +5,12 @@
   "config.assetsDir.desc": "存放插入图片/文档的工作区相对目录。可以是相对路径（相对工作区根）或绝对路径。",
   "config.overridePaste.desc": "启用后，用确认式粘贴（@link@）覆盖 Ctrl+V（仅编辑器内）。",
   "config.verboseLog.desc": "输出更详细的调试日志（候选样本、逐文件扫描与删除明细等）。通常保持关闭。",
-  "config.commentTokenMap.desc": "文件扩展名到行注释符的映射（用于插入 @link@ 与限定搜索范围）。",
+  "config.commentTokenRules.desc": "可选：规则数组，优先生效。语法示例：`{c,cpp,h}-{//}`、`{py,sh}-{#}`。左侧为逗号分隔的扩展名集合，右侧为注释符。",
   "cmd.insertImage": "插入代码描述图片",
   "cmd.insertDoc": "插入代码描述文档",
   "cmd.insertImageFromClipboard": "从剪贴板插入代码描述图片/文档",
-  "cmd.smartPaste": "确认式粘贴为 @link@"
-  ,
-  "submenu.title": "注释快贴"
-  ,
+  "cmd.smartPaste": "确认式粘贴为 @link@",
+  "submenu.title": "注释快贴",
   "cmd.cleanInvalid": "清理无效链接",
   "cmd.showLog": "打开调试日志",
   "category.title": "注释快贴"
@@ -23,15 +21,10 @@
   "cmd.links.cleanFile": "清理无效链接",
   "cmd.links.cleanSingle": "删除此链接",
   "cmd.links.toggleMissing": "切换：只显示无效链接",
-  "cmd.links.search": "搜索链接…"
-  ,
+  "cmd.links.search": "搜索链接…",
   "view.preview": "预览",
   "cmd.pinPreview": "固定预览",
-  "cmd.preview.clear": "清空预览"
-  ,
-  "view.tokens": "注释符映射",
-  "cmd.tokens.refresh": "刷新",
-  "cmd.tokens.delete": "删除"
-  ,
-  "cmd.diagnostics": "诊断信息"
+  "cmd.preview.clear": "清空预览",
+  "cmd.diagnostics": "诊断信息",
+  "cmd.deleteTokens": "删除规则中的扩展名..."
 }

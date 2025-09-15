@@ -2,7 +2,7 @@
 	"name": "docusnap-assets",
 		"displayName": "%displayName%",
 		"description": "%description%",
-	"version": "0.2.2",
+	"version": "0.2.3",
 	"publisher": "jsnjjnzx",
 	"license": "MIT",
 	"engines": {
@@ -29,7 +29,6 @@
 		"onCommand:docusnap.diagnostics",
 		"onView:docusnap.links",
 		"onView:docusnap.preview",
-		"onView:docusnap.tokens",
 		"onCommand:docusnap.links.refresh",
 		"onCommand:docusnap.openLinkLocation",
 		"onCommand:docusnap.links.cleanFile",
@@ -37,8 +36,8 @@
 	"onCommand:docusnap.links.toggleShowMissing",
 	"onCommand:docusnap.pinPreview",
 	"onCommand:docusnap.preview.clear",
-	"onCommand:docusnap.tokens.refresh",
-	"onCommand:docusnap.tokens.delete"
+	"onCommand:docusnap.links.search",
+	"onCommand:docusnap.deleteCommentTokens"
 	],
 		"contributes": {
                 "viewsContainers": {
@@ -62,11 +61,6 @@
 							"name": "%view.preview%",
 							"type": "webview",
                             "icon": "images/links.svg"
-						},
-						{
-							"id": "docusnap.tokens",
-							"name": "%view.tokens%",
-							"icon": "images/links.svg"
 						}
                     ]
                 },
@@ -94,18 +88,16 @@
 								"default": false,
 								"description": "%config.verboseLog.desc%"
 							},
-							"docuSnap.commentTokenMap": {
-								"type": "object",
-								"additionalProperties": { "type": "string" },
-								"default": {
-									"c": "//", "cpp": "//", "h": "//", "hpp": "//",
-									"js": "//", "jsx": "//", "ts": "//", "tsx": "//", "mjs": "//", "cjs": "//",
-									"java": "//", "cs": "//", "go": "//", "rs": "//", "kt": "//", "scala": "//", "swift": "//",
-									"py": "#", "sh": "#", "bash": "#", "zsh": "#", "ps1": "#", "bat": "#", "toml": "#", "yaml": "#", "yml": "#", "r": "#", "pl": "#", "rb": "#", "coffee": "#",
-									"lua": "--", "sql": "--", "hs": "--",
-									"m": "%", "erl": "%"
-								},
-								"description": "%config.commentTokenMap.desc%"
+							"docuSnap.commentTokenRules": {
+								"type": "array",
+								"items": { "type": "string" },
+								"default": [
+									"{c,cpp,h,hpp,js,jsx,ts,tsx,mjs,cjs,java,cs,go,rs,kt,scala,swift}-{//}",
+									"{py,sh,bash,zsh,ps1,bat,toml,yaml,yml,r,pl,rb,coffee}-{#}",
+									"{lua,sql,hs}-{--}",
+									"{m,erl}-%"
+								],
+								"markdownDescription": "%config.commentTokenRules.desc%"
 							}
 
 
@@ -188,15 +180,15 @@
 					"category": "%category.title%"
 				},
 				{
-					"command": "docusnap.tokens.refresh",
-					"title": "%cmd.tokens.refresh%",
+					"command": "docusnap.links.search",
+					"title": "%cmd.links.search%",
 					"category": "%category.title%"
-				},
-				{
-					"command": "docusnap.tokens.delete",
-					"title": "%cmd.tokens.delete%",
-					"icon": "$(trash)"
-				}
+					},
+					{
+						"command": "docusnap.deleteCommentTokens",
+						"title": "%cmd.deleteTokens%",
+						"category": "%category.title%"
+					}
 		],
 			"keybindings": [
 				{
@@ -234,7 +226,7 @@
 									"group": "9_cleanup"
 					}
 				],
-					"view/title": [
+						"view/title": [
 						{
 							"command": "docusnap.links.refresh",
 							"when": "view == docusnap.links",
@@ -254,20 +246,8 @@
 							"command": "docusnap.preview.clear",
 							"when": "view == docusnap.preview",
 							"group": "navigation@99"
-						},
-						{
-							"command": "docusnap.tokens.refresh",
-							"when": "view == docusnap.tokens",
-							"group": "navigation@1"
 						}
-					],
-					"view/item/context": [
-						{
-							"command": "docusnap.tokens.delete",
-							"when": "view == docusnap.tokens && viewItem == docusnap.token",
-							"group": "inline@0"
-						}
-					]
+						]
 		}
 	},
 	"scripts": {
