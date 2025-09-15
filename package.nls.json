@@ -17,7 +17,7 @@
   "view.links": "链接",
   "cmd.links.refresh": "刷新",
   "cmd.links.openLocation": "打开链接位置",
-  "cmd.links.cleanFile": "清理当前文件的无效链接",
+  "cmd.links.cleanFile": "清理无效链接",
   "cmd.links.cleanSingle": "删除此链接",
   "cmd.links.toggleMissing": "切换：只显示无效链接",
   "cmd.links.search": "搜索链接…"

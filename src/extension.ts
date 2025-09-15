@@ -14,7 +14,7 @@ const ASSET_TAG_LINK = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s
 function normalizeRel(p: string): string {
   let r = (p || '').trim();
   r = r.replace(/\\/g, '/');
-  r = r.replace(/^\.\/+/, '');
+  r = r.replace(/^\.\//, '');
   r = r.replace(/^\/+/, '');
   if (process.platform === 'win32') r = r.toLowerCase();
   return r;
@@ -65,16 +65,47 @@ async function pickFiles(filters?: { [name: string]: string[] }): Promise<vscode
   return vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: true, filters });
 }
 
-async function copyIntoAssets(selected: vscode.Uri[], subDir?: string): Promise<{ rel: string; abs: string }[]> {
+// 支持按文件自定义重命名：renamer 返回基础文件名（不含扩展名）；返回 undefined/空字符串时沿用原名
+async function copyIntoAssets(
+  selected: vscode.Uri[],
+  subDir?: string,
+  renamer?: (src: vscode.Uri, baseName: string, index: number) => Promise<string | undefined>
+): Promise<{ rel: string; abs: string }[]> {
   const assetsRoot = getAssetsDir();
   if (!assetsRoot) throw new Error('未找到工作区，无法解析资产目录。');
   const targetRoot = subDir ? path.join(assetsRoot, subDir) : assetsRoot;
   await ensureDir(targetRoot);
 
   const results: { rel: string; abs: string }[] = [];
-  for (const uri of selected) {
-    const base = path.basename(uri.fsPath);
-    const destAbs = path.join(targetRoot, base);
+  for (let i = 0; i < selected.length; i++) {
+    const uri = selected[i];
+    const origBase = path.basename(uri.fsPath);
+    const ext = path.extname(origBase);
+    const baseNameWithoutExt = path.basename(origBase, ext);
+    let targetBase = baseNameWithoutExt;
+    if (renamer) {
+      try {
+        const maybe = await renamer(uri, baseNameWithoutExt, i);
+        if (maybe && maybe.trim()) targetBase = maybe.trim();
+      } catch {}
+    }
+    // 简单清理非法字符
+    targetBase = targetBase.replace(/[\\/:*?"<>|]/g, ' ').trim().replace(/\s+/g, '-');
+    if (!targetBase) targetBase = baseNameWithoutExt || 'asset';
+
+    // 确保不覆盖已存在文件：若冲突则追加 -1, -2, ...
+    let destAbs = path.join(targetRoot, `${targetBase}${ext}`);
+    let cnt = 1;
+    while (true) {
+      try {
+        await fs.promises.access(destAbs, fs.constants.F_OK);
+        const tryName = `${targetBase}-${cnt++}${ext}`;
+        destAbs = path.join(targetRoot, tryName);
+      } catch {
+        break;
+      }
+    }
+
     await fs.promises.copyFile(uri.fsPath, destAbs);
     const rel = path.relative(assetsRoot, destAbs).replace(/\\/g, '/');
     results.push({ rel, abs: destAbs });
@@ -314,14 +345,34 @@ async function handleSmartPaste() {
 
   if (foundType) {
     const hint = foundType === 'image' ? '图片' : '文件';
-    const choice = await vscode.window.showInformationMessage(`检测到剪贴板中有${hint}，是否插入 @link@ 链接？`, { modal: true }, '插入链接', '普通粘贴');
-    if (choice === '插入链接') {
+    const choice = await vscode.window.showInformationMessage(
+      `检测到剪贴板中有${hint}，是否插入 @link@ 链接？`,
+      { modal: true },
+      '插入链接',
+      '重命名插入',
+      '普通粘贴'
+    );
+    if (choice === '插入链接' || choice === '重命名插入') {
+      const wantRename = (choice === '重命名插入');
+      const renamer = wantRename ? async (u: vscode.Uri, base: string) => {
+        const ext = path.extname(u.fsPath).toLowerCase();
+        const input = await vscode.window.showInputBox({
+          prompt: `为 ${path.basename(u.fsPath)} 重命名（不含扩展名 ${ext}）`,
+          value: base,
+          validateInput: (v) => {
+            if (!v.trim()) return '文件名不能为空';
+            if (/[\\/:*?"<>|]/.test(v)) return '文件名不能包含 \\ / : * ? " < > |';
+            return undefined;
+          }
+        });
+        return input?.trim() || base;
+      } : undefined;
       try {
         if (foundType === 'image') {
           // 此时再导出图片
           imgTmpPath = await exportClipboardImageWindows();
           if (!imgTmpPath || !fs.existsSync(imgTmpPath)) throw new Error('无法从剪贴板导出图片');
-          const copied = await copyIntoAssets([vscode.Uri.file(imgTmpPath)], 'images');
+          const copied = await copyIntoAssets([vscode.Uri.file(imgTmpPath)], 'images', renamer);
           insertAtCursor(editor, copied.map((c) => `${prefix} @link@:${c.rel}`).join('\n'));
         } else {
           const uris = fileUris || [];
@@ -329,11 +380,11 @@ async function handleSmartPaste() {
           const others = uris.filter((u) => !isImagePath(u.fsPath));
           const tags: string[] = [];
           if (imgs.length) {
-            const copied = await copyIntoAssets(imgs, 'images');
+            const copied = await copyIntoAssets(imgs, 'images', renamer);
             tags.push(...copied.map((c) => `${prefix} @link@:${c.rel}`));
           }
           if (others.length) {
-            const copied = await copyIntoAssets(others, 'docs');
+            const copied = await copyIntoAssets(others, 'docs', renamer);
             tags.push(...copied.map((c) => `${prefix} @link@:${c.rel}`));
           }
           if (tags.length) insertAtCursor(editor, tags.join('\n'));
@@ -648,15 +699,29 @@ async function handleInsertImageFromClipboard() {
     if (uris.length) {
       const editor = vscode.window.activeTextEditor;
       const prefix = editor ? getLineCommentToken(editor.document) : '//';
+      const wantRename = await vscode.window.showQuickPick(['重命名附件', '跳过重命名'], { placeHolder: '是否为即将插入的附件重命名？' });
+      const renamer = (wantRename === '重命名附件') ? async (u: vscode.Uri, base: string) => {
+        const ext = path.extname(u.fsPath).toLowerCase();
+        const input = await vscode.window.showInputBox({
+          prompt: `为 ${path.basename(u.fsPath)} 重命名（不含扩展名 ${ext}）`,
+          value: base,
+          validateInput: (v) => {
+            if (!v.trim()) return '文件名不能为空';
+            if (/[\\/:*?"<>|]/.test(v)) return '文件名不能包含 \\ / : * ? " < > |';
+            return undefined;
+          }
+        });
+        return input?.trim() || base;
+      } : undefined;
       const imgs = uris.filter(u => isImagePath(u.fsPath));
       const others = uris.filter(u => !isImagePath(u.fsPath));
       const tags: string[] = [];
       if (imgs.length) {
-        const copied = await copyIntoAssets(imgs, 'images');
+        const copied = await copyIntoAssets(imgs, 'images', renamer);
         tags.push(...copied.map(c => `${prefix} @link@:${c.rel}`));
       }
       if (others.length) {
-        const copied = await copyIntoAssets(others, 'docs');
+        const copied = await copyIntoAssets(others, 'docs', renamer);
         tags.push(...copied.map(c => `${prefix} @link@:${c.rel}`));
       }
       if (editor && tags.length) insertAtCursor(editor, tags.join('\n'));
@@ -673,7 +738,21 @@ async function handleInsertImageFromClipboard() {
       vscode.window.showWarningMessage('剪贴板中没有可用的图片或文件。');
       return;
     }
-    const copied = await copyIntoAssets([vscode.Uri.file(tmp)], 'images');
+    const wantRename = await vscode.window.showQuickPick(['重命名附件', '跳过重命名'], { placeHolder: '是否为即将插入的附件重命名？' });
+    const renamer = (wantRename === '重命名附件') ? async (u: vscode.Uri, base: string) => {
+      const ext = path.extname(u.fsPath).toLowerCase();
+      const input = await vscode.window.showInputBox({
+        prompt: `为 ${path.basename(u.fsPath)} 重命名（不含扩展名 ${ext}）`,
+        value: base,
+        validateInput: (v) => {
+          if (!v.trim()) return '文件名不能为空';
+          if (/[\\/:*?"<>|]/.test(v)) return '文件名不能包含 \\ / : * ? " < > |';
+          return undefined;
+        }
+      });
+      return input?.trim() || base;
+    } : undefined;
+    const copied = await copyIntoAssets([vscode.Uri.file(tmp)], 'images', renamer);
     const editor = vscode.window.activeTextEditor;
     const prefix = editor ? getLineCommentToken(editor.document) : '//';
     const tags = copied.map((c) => `${prefix} @link@:${c.rel}`).join('\n');

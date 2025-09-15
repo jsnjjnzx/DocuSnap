@@ -1,5 +1,14 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.1] - 2025-09-15
+### Added
+- Smart Paste dialog now includes a “Rename & Insert” button:
+	- Choose renaming upfront to avoid a second prompt;
+	- Rename clipboard image/files before copying into assets (invalid chars sanitized; auto-avoid name conflicts).
+
+### Improvements
+- Links view overflow menu wording refined: “Clean invalid links (File)” -> “Clean invalid links”.
+
 ## [0.2.0] - 2025-09-14
 ### Added
 - Links sidebar view (Activity Bar): list all `@link@` items grouped by file, supporting:
