@@ -4,6 +4,8 @@
   "config.title": "DocuSnap",
   "config.assetsDir.desc": "Directory to store inserted images/docs. Can be relative to workspace or absolute path.",
   "config.overridePaste.desc": "When enabled, override Ctrl+V in editor with confirm-on-paste (@link@).",
+  "config.verboseLog.desc": "Emit more detailed debug logs (candidate samples, per-file scanning, deletion details, etc.). Usually keep off.",
+  "config.commentTokenMap.desc": "Map of file extensions to line comment tokens (used for inserting @link@ and limiting search scope).",
   "cmd.insertImage": "Insert description image",
   "cmd.insertDoc": "Insert description document",
   "cmd.insertImageFromClipboard": "Insert image/document from clipboard",
@@ -12,6 +14,7 @@
   "submenu.title": "DocuSnap"
   ,
   "cmd.cleanInvalid": "Clean invalid links",
+  "cmd.showLog": "Open Debug Log",
   "category.title": "DocuSnap"
   ,
   "view.links": "Links",
@@ -21,4 +24,14 @@
   "cmd.links.cleanSingle": "Remove this link",
   "cmd.links.toggleMissing": "Toggle: Show only missing",
   "cmd.links.search": "Search links..."
+  ,
+  "view.preview": "Preview",
+  "cmd.pinPreview": "Pin Preview",
+  "cmd.preview.clear": "Clear Preview"
+  ,
+  "view.tokens": "Comment Token Map",
+  "cmd.tokens.refresh": "Refresh",
+  "cmd.tokens.delete": "Delete"
+  ,
+  "cmd.diagnostics": "Diagnostics"
 }

@@ -18,14 +18,20 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (no install scripts)
+        run: npm ci --ignore-scripts
 
       - name: Build (tsc)
         run: npm run compile
 
       - name: Package
         run: npx vsce package
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docusnap-assets-vsix
+          path: "*.vsix"
 
       - name: Publish to VS Code Marketplace
         env:

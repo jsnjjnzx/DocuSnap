@@ -1,5 +1,14 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.2] - 2025-09-15
+### Added
+- New setting `docuSnap.verboseLog`: enable a “verbose logging” mode to emit candidate samples, per-file scanning, deletion details, etc.
+
+### Improvements
+- Quieter default logging: keep only start/end and key counts; the cleanup flow no longer forces the log panel to open.
+- Consolidated noisy debug prints under the verbose toggle; diagnostics candidate samples are also printed only in verbose mode.
+- Activation banner is now printed only in verbose mode.
+
 ## [0.2.1] - 2025-09-15
 ### Added
 - Smart Paste dialog now includes a “Rename & Insert” button:

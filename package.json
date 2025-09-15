@@ -2,7 +2,7 @@
 	"name": "docusnap-assets",
 		"displayName": "%displayName%",
 		"description": "%description%",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "jsnjjnzx",
 	"license": "MIT",
 	"engines": {
@@ -26,12 +26,19 @@
 		"onCommand:docusnap.insertDoc",
 		"onCommand:docusnap.insertImageFromClipboard",
 		"onCommand:docusnap.smartPaste",
+		"onCommand:docusnap.diagnostics",
 		"onView:docusnap.links",
+		"onView:docusnap.preview",
+		"onView:docusnap.tokens",
 		"onCommand:docusnap.links.refresh",
 		"onCommand:docusnap.openLinkLocation",
 		"onCommand:docusnap.links.cleanFile",
 		"onCommand:docusnap.links.cleanSingle",
-	"onCommand:docusnap.links.toggleShowMissing"
+	"onCommand:docusnap.links.toggleShowMissing",
+	"onCommand:docusnap.pinPreview",
+	"onCommand:docusnap.preview.clear",
+	"onCommand:docusnap.tokens.refresh",
+	"onCommand:docusnap.tokens.delete"
 	],
 		"contributes": {
                 "viewsContainers": {
@@ -47,8 +54,20 @@
 					"docusnap": [
                         {
 							"id": "docusnap.links",
-							"name": "%view.links%"
-                        }
+							"name": "%view.links%",
+                            "icon": "images/links.svg"
+						},
+						{
+							"id": "docusnap.preview",
+							"name": "%view.preview%",
+							"type": "webview",
+                            "icon": "images/links.svg"
+						},
+						{
+							"id": "docusnap.tokens",
+							"name": "%view.tokens%",
+							"icon": "images/links.svg"
+						}
                     ]
                 },
 				"submenus": [
@@ -70,43 +89,38 @@
 								"default": false,
 								"description": "%config.overridePaste.desc%"
 							},
-							"docuSnap.searchIncludeGlobs": {
-								"type": "array",
-								"items": { "type": "string" },
-								"default": [
-									"**/*.{ts,tsx,js,jsx,mjs,cjs,md,mdx,txt,html,css,scss,less,json,py,go,java,cs,cpp,c,h,hpp,rs,rb,php,kt,scala,sql,lua,sh,ps1,bat,yaml,yml,toml}"
-								],
-								"description": "DocuSnap 扫描 @link@ 的包含文件模式（Glob）。可以是多个，命中越少越快。"
+							"docuSnap.verboseLog": {
+								"type": "boolean",
+								"default": false,
+								"description": "%config.verboseLog.desc%"
 							},
-							"docuSnap.searchExcludeGlobs": {
-								"type": "array",
-								"items": { "type": "string" },
-								"default": [
-									"**/node_modules/**",
-									"**/.git/**",
-									"**/.svn/**",
-									"**/.hg/**",
-									"**/.vscode/**",
-									"**/out/**",
-									"**/dist/**",
-									"**/build/**",
-									"**/coverage/**"
-								],
-								"description": "DocuSnap 扫描 @link@ 的排除文件/目录模式（Glob）。默认排除大型目录。"
+							"docuSnap.commentTokenMap": {
+								"type": "object",
+								"additionalProperties": { "type": "string" },
+								"default": {
+									"c": "//", "cpp": "//", "h": "//", "hpp": "//",
+									"js": "//", "jsx": "//", "ts": "//", "tsx": "//", "mjs": "//", "cjs": "//",
+									"java": "//", "cs": "//", "go": "//", "rs": "//", "kt": "//", "scala": "//", "swift": "//",
+									"py": "#", "sh": "#", "bash": "#", "zsh": "#", "ps1": "#", "bat": "#", "toml": "#", "yaml": "#", "yml": "#", "r": "#", "pl": "#", "rb": "#", "coffee": "#",
+									"lua": "--", "sql": "--", "hs": "--",
+									"m": "%", "erl": "%"
+								},
+								"description": "%config.commentTokenMap.desc%"
 							}
+
 
 					}
 		},
 				"commands": [
-			{
-						"command": "docusnap.insertImage",
+				{
+					"command": "docusnap.insertImage",
 					"title": "%cmd.insertImage%",
-				"category": "%category.title%"
-			},
-			{
-						"command": "docusnap.insertDoc",
+					"category": "%category.title%"
+				},
+				{
+					"command": "docusnap.insertDoc",
 					"title": "%cmd.insertDoc%",
-				"category": "%category.title%"
+					"category": "%category.title%"
 				},
 				{
 							"command": "docusnap.insertImageFromClipboard",
@@ -119,10 +133,20 @@
 					"category": "%category.title%"
 				},
 				{
+					"command": "docusnap.diagnostics",
+					"title": "%cmd.diagnostics%",
+					"category": "%category.title%"
+				},
+				{
 							"command": "docusnap.cleanInvalidLinks",
 					"title": "%cmd.cleanInvalid%",
 					"category": "%category.title%"
 		},
+	            {
+	                "command": "docusnap.showLog",
+	                "title": "%cmd.showLog%",
+	                "category": "%category.title%"
+	            },
 			{
 				"command": "docusnap.links.refresh",
 				"title": "%cmd.links.refresh%",
@@ -152,16 +176,36 @@
 				"command": "docusnap.links.search",
 				"title": "%cmd.links.search%",
 				"category": "%category.title%"
-			}
+				},
+				{
+					"command": "docusnap.preview.clear",
+					"title": "%cmd.preview.clear%",
+					"category": "%category.title%"
+				},
+				{
+					"command": "docusnap.pinPreview",
+					"title": "%cmd.pinPreview%",
+					"category": "%category.title%"
+				},
+				{
+					"command": "docusnap.tokens.refresh",
+					"title": "%cmd.tokens.refresh%",
+					"category": "%category.title%"
+				},
+				{
+					"command": "docusnap.tokens.delete",
+					"title": "%cmd.tokens.delete%",
+					"icon": "$(trash)"
+				}
 		],
 			"keybindings": [
 				{
-							"command": "docusnap.smartPaste",
+					"command": "docusnap.smartPaste",
 					"key": "ctrl+v",
 					"win": "ctrl+v",
 					"linux": "ctrl+v",
 					"mac": "cmd+v",
-							"when": "editorTextFocus && config.docuSnap.overridePaste"
+					"when": "editorTextFocus && config.docuSnap.overridePaste"
 				}
 			],
 		"menus": {
@@ -205,6 +249,23 @@
 							"command": "docusnap.links.cleanFile",
 							"when": "view == docusnap.links",
 							"group": "2_docusnap@3"
+						},
+						{
+							"command": "docusnap.preview.clear",
+							"when": "view == docusnap.preview",
+							"group": "navigation@99"
+						},
+						{
+							"command": "docusnap.tokens.refresh",
+							"when": "view == docusnap.tokens",
+							"group": "navigation@1"
+						}
+					],
+					"view/item/context": [
+						{
+							"command": "docusnap.tokens.delete",
+							"when": "view == docusnap.tokens && viewItem == docusnap.token",
+							"group": "inline@0"
 						}
 					]
 		}

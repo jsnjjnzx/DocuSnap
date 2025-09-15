@@ -22,6 +22,15 @@ function normalizeRel(p: string): string {
 
 function getLineCommentToken(doc: vscode.TextDocument): string {
   const id = doc.languageId;
+  // 优先读取配置的白名单映射（按扩展名匹配）
+  try {
+    const cfg = vscode.workspace.getConfiguration();
+    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap');
+    if (map) {
+      const ext = path.extname(doc.fileName).toLowerCase().replace(/^\./, '');
+      if (ext && map[ext]) return map[ext];
+    }
+  } catch {}
   switch (id) {
     case 'python':
     case 'shellscript':
@@ -44,7 +53,7 @@ function getLineCommentToken(doc: vscode.TextDocument): string {
     case 'erlang':
       return '%';
     default:
-      return '//'; // cpp/c/csharp/java/js/ts/go/rust/kotlin/scala/swift 等
+      return '//';
   }
 }
 
@@ -56,6 +65,47 @@ function getAssetsDir(): string | undefined {
   const ws = vscode.workspace.workspaceFolders?.[0];
   return ws ? path.join(ws.uri.fsPath, dir) : undefined;
 }
+
+// 汇总默认排除 + VS Code 的 files.exclude 与 search.exclude
+function getWorkspaceExcludes(): string[] {
+  const defaults = ['**/node_modules/**', '**/.git/**', '**/.svn/**', '**/.hg/**', '**/.vscode/**', '**/out/**', '**/dist/**', '**/build/**', '**/coverage/**'];
+  const filesCfg = vscode.workspace.getConfiguration('files');
+  const searchCfg = vscode.workspace.getConfiguration('search');
+  const filesEx = filesCfg.get<Record<string, any>>('exclude') || {};
+  const searchEx = searchCfg.get<Record<string, any>>('exclude') || {};
+  const pickTrueFiles = (m: Record<string, any>) => Object.entries(m)
+    .filter(([, v]) => v === true) // 仅采纳明确为 true 的项，忽略字符串型 when 条件
+    .map(([k]) => k);
+  const pickTrueSearch = (m: Record<string, any>) => Object.entries(m)
+    .filter(([, v]) => v === true)
+    .map(([k]) => k);
+  const merged = new Set<string>([...defaults, ...pickTrueFiles(filesEx), ...pickTrueSearch(searchEx)]);
+  return Array.from(merged);
+}
+
+// -------- Logging --------
+let channel: vscode.OutputChannel | undefined;
+function getChannel(): vscode.OutputChannel {
+  if (!channel) channel = vscode.window.createOutputChannel('DocuSnap');
+  return channel;
+}
+function safeToStr(v: any): string {
+  try { if (typeof v === 'string') return v; return JSON.stringify(v); } catch { return String(v); }
+}
+function log(...args: any[]) {
+  const ch = getChannel();
+  const ts = new Date().toISOString();
+  ch.appendLine(`[${ts}] ${args.map(a => safeToStr(a)).join(' ')}`);
+}
+// 读取配置控制详细日志输出（默认关闭）。开启后将打印候选样本、逐文件扫描、删除明细等调试信息。
+function isVerbose(): boolean {
+  try {
+    return !!vscode.workspace.getConfiguration().get<boolean>('docuSnap.verboseLog', false);
+  } catch {
+    return false;
+  }
+}
+function debugLog(...args: any[]) { if (isVerbose()) log(...args); }
 
 async function ensureDir(dir: string): Promise<void> {
   await fs.promises.mkdir(dir, { recursive: true });
@@ -194,6 +244,10 @@ class AssetHoverProvider implements vscode.HoverProvider {
     const stat = await fs.promises.stat(abs).catch(() => undefined);
     if (!stat) return undefined;
 
+    // 在悬浮内容顶部添加“固定预览”按钮（使用命令链接）
+    const pinArg = encodeURIComponent(JSON.stringify([uri.toString()]));
+    md.appendMarkdown(`[📌 固定预览](command:docusnap.pinPreview?${pinArg})\n\n`);
+
     if (isImageExt(rel)) {
       md.appendMarkdown(`![asset](${uri.toString()})`);
     } else if (/(\.md|\.txt)$/i.test(rel)) {
@@ -207,6 +261,116 @@ class AssetHoverProvider implements vscode.HoverProvider {
       md.appendMarkdown(`[打开附件](${uri.toString()})`);
     }
     return new vscode.Hover(md, range);
+  }
+}
+
+// ---------- Pinned Preview View ----------
+class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewId = 'docusnap.preview';
+  private _view?: vscode.WebviewView;
+  private _current?: vscode.Uri;
+  private _readyResolve?: () => void;
+  public readonly ready: Promise<void>;
+
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.ready = new Promise<void>(res => { this._readyResolve = res; });
+  }
+
+  resolveWebviewView(webviewView: vscode.WebviewView): void | Thenable<void> {
+  this._view = webviewView;
+    const roots: vscode.Uri[] = [];
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (ws) roots.push(ws.uri);
+    const assets = getAssetsDir();
+    if (assets) roots.push(vscode.Uri.file(assets));
+    if (roots.length === 0) roots.push(this.context.extensionUri);
+    webviewView.webview.options = { enableScripts: false, localResourceRoots: roots, retainContextWhenHidden: true } as any;
+    this.render();
+    if (this._readyResolve) this._readyResolve();
+  }
+
+  setResource(uri: vscode.Uri) {
+    this._current = uri;
+    // 确保本次资源的上级目录被允许访问
+    if (this._view) {
+      const roots: vscode.Uri[] = [];
+      const ws = vscode.workspace.workspaceFolders?.[0];
+      if (ws) roots.push(ws.uri);
+      const assets = getAssetsDir();
+      if (assets) roots.push(vscode.Uri.file(assets));
+      try { roots.push(vscode.Uri.file(path.dirname(uri.fsPath))); } catch { /* noop */ }
+      this._view.webview.options = { enableScripts: false, localResourceRoots: roots };
+    }
+    this.render();
+  }
+
+  clear() {
+    this._current = undefined;
+    this.render();
+  }
+
+  private render() {
+    if (!this._view) return;
+    const webview = this._view.webview;
+    const csp = `default-src 'none'; img-src ${webview.cspSource} file: data:; style-src 'unsafe-inline' ${webview.cspSource};`;
+    const body = this.renderBody(webview);
+    webview.html = `<!DOCTYPE html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="${csp}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      :root{color-scheme: light dark}
+      body{padding:8px;font:12px var(--vscode-font-family)}
+      .hint{color: var(--vscode-descriptionForeground)}
+      .path{color: var(--vscode-descriptionForeground); font-size: 11px; margin-bottom: 6px;}
+      img{max-width:100%;height:auto;border:1px solid var(--vscode-widgetBorder);}
+      pre{white-space:pre-wrap;word-break:break-word;border:1px solid var(--vscode-widgetBorder);padding:8px;border-radius:4px;}
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`;
+  }
+
+  private renderBody(webview: vscode.Webview): string {
+    if (!this._current) {
+      return `<div class="hint">点击悬浮窗中的“📌 固定预览”将资源固定到此处。</div>`;
+    }
+    const uri = this._current;
+    const fsPath = uri.fsPath;
+    const isImg = isImageExt(fsPath);
+    if (isImg) {
+      try {
+        const buf = fs.readFileSync(fsPath);
+        const ext = path.extname(fsPath).toLowerCase();
+        const mime = ext === '.png' ? 'image/png'
+          : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg'
+          : ext === '.gif' ? 'image/gif'
+          : ext === '.svg' ? 'image/svg+xml'
+          : ext === '.webp' ? 'image/webp'
+          : 'application/octet-stream';
+        const b64 = buf.toString('base64');
+        const name = path.basename(fsPath);
+        return `<div class="path">${name}</div><img src="data:${mime};base64,${b64}" alt="asset" />`;
+      } catch {
+        const asWeb = webview.asWebviewUri(uri);
+        return `<img src="${asWeb}" alt="asset" />`;
+      }
+    }
+    if (/(\.md|\.txt)$/i.test(fsPath)) {
+      try {
+        const txt = fs.readFileSync(fsPath, 'utf8');
+        const esc = txt.replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[s]!));
+        const name = path.basename(fsPath);
+        return `<div class="path">${name}</div><pre>${esc}</pre>`;
+      } catch {
+        return `<div class="hint">无法读取文本预览。</div>`;
+      }
+    }
+    const name = path.basename(fsPath);
+    return `<div class="hint">不支持的预览类型：${name}</div>`;
   }
 }
 
@@ -463,6 +627,8 @@ function findLinkRangeInDoc(doc: vscode.TextDocument, relNorm: string, nearLine?
 }
 
 async function handleCleanInvalidLinks() {
+  // 精简默认日志：不再强制打开日志面板。如需详细信息可手动运行“DocuSnap: Show Log”或开启配置 docuSnap.verboseLog。
+
   const ws = vscode.workspace.workspaceFolders?.[0];
   if (!ws) {
     vscode.window.showWarningMessage('请先打开一个工作区。');
@@ -475,6 +641,7 @@ async function handleCleanInvalidLinks() {
     return;
   }
   const assetsRootDir = assetsRoot!; // narrow to string for inner closures
+  log('CleanInvalid: start', { root, assetsRootDir });
 
   // 选择清理范围
   const scope = await vscode.window.showQuickPick([
@@ -484,24 +651,59 @@ async function handleCleanInvalidLinks() {
   if (!scope) return;
   const scopeVal = (scope as any).value as 'file' | 'workspace';
 
-  // 读取配置的 globs
+  // 固定 fast 扫描策略：基于 commentTokenMap 生成 include globs，使用默认 exclude，遵守 ignore 文件
   const cfg = vscode.workspace.getConfiguration();
-  const includeGlobs = cfg.get<string[]>('docuSnap.searchIncludeGlobs', ['**/*']);
-  const excludeGlobs = cfg.get<string[]>('docuSnap.searchExcludeGlobs', ['**/node_modules/**']);
+  const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+  const exts = Object.keys(map || {});
+  const includeGlobs = exts.length ? [`**/*.{${exts.join(',')}}`] : ['**/*'];
+  const excludeGlobs = getWorkspaceExcludes();
+  const respectIgnore = true;
+  debugLog('Config', { includeGlobs, excludeGlobs, respectIgnore, scanMode: 'fast' });
 
-  // 1) 扫描所有 @link@（优化：通过 include/exclude globs 限定范围，再并行扫描内容）
+  // 1) 借助 ripgrep：先用 findTextInFiles 快速定位包含 @link@: 的文件，再精确解析
+  function unionGlob(globs: string[] | undefined): string | undefined {
+    if (!globs || globs.length === 0) return undefined;
+    if (globs.length === 1) return globs[0];
+    return `{${globs.join(',')}}`;
+  }
+
   let texts: vscode.Uri[] = [];
   if (scopeVal === 'file') {
-    if (vscode.window.activeTextEditor) texts = [vscode.window.activeTextEditor.document.uri];
+    const cur = vscode.window.activeTextEditor?.document.uri;
+    if (cur) texts = [cur];
+    debugLog('Scope=file', { file: cur?.fsPath });
   } else {
-    const candidateSets = await Promise.all(includeGlobs.map(g => collectWorkspaceFiles(g, excludeGlobs)));
-    const candidates = new Map<string, vscode.Uri>();
-    for (const arr of candidateSets) for (const u of arr) candidates.set(u.fsPath, u);
-    // 并入已打开的文本文档（未保存更改也能被扫描）
-    for (const d of vscode.workspace.textDocuments) {
-      if (d.uri.scheme === 'file') candidates.set(d.uri.fsPath, d.uri);
+    debugLog('Collect via findFiles', { includeGlobs, excludeGlobs });
+    const includeList = includeGlobs && includeGlobs.length ? includeGlobs : ['**/*'];
+    const excludeList = excludeGlobs && excludeGlobs.length ? excludeGlobs : ['**/node_modules/**'];
+    const sets = await Promise.all(includeList.map(g => collectWorkspaceFiles(g, excludeList)));
+    const mapSet = new Map<string, vscode.Uri>();
+    for (const arr of sets) for (const u of arr) mapSet.set(u.fsPath, u);
+    texts = Array.from(mapSet.values());
+    debugLog('Candidates from findFiles', texts.length);
+    if (texts.length > 0) {
+      const sample = texts.slice(0, 500).map(u => u.fsPath);
+      debugLog('Candidates sample', { count: sample.length, files: sample });
+      if (texts.length > 500) debugLog('Candidates sample truncated', texts.length - 500);
     }
-    texts = Array.from(candidates.values());
+    if (texts.length === 0) {
+      // 兜底：扩大 include 到全量
+      debugLog('FindFiles got zero results -> widen to all');
+      const setsAll = await Promise.all(['**/*'].map(g => collectWorkspaceFiles(g, excludeList)));
+      const mapAll = new Map<string, vscode.Uri>();
+      for (const arr of setsAll) for (const u of arr) mapAll.set(u.fsPath, u);
+      texts = Array.from(mapAll.values());
+      debugLog('Candidates after widen', texts.length);
+    }
+    // 合并已打开文档
+    if (vscode.workspace.textDocuments.length) {
+      const add = new Map<string, vscode.Uri>();
+      for (const u of texts) add.set(u.fsPath, u);
+      for (const d of vscode.workspace.textDocuments) if (d.uri.scheme === 'file') add.set(d.uri.fsPath, d.uri);
+      const before = texts.length;
+      texts = Array.from(add.values());
+      debugLog('Merged opened docs', { before, after: texts.length });
+    }
   }
   if (scopeVal === 'file' && texts.length === 0) {
     vscode.window.showInformationMessage('未找到当前活动文件。');
@@ -513,6 +715,7 @@ async function handleCleanInvalidLinks() {
   // 并发限制，避免一次性打开太多文件
   const concurrency = Math.max(2, os.cpus()?.length ?? 4);
   const queue = [...texts];
+  const verboseList = isVerbose() && texts.length <= 300; // 仅在详细模式时记录逐文件扫描
   await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '解析链接…', cancellable: true }, async (progress) => {
     let processed = 0;
     async function worker() {
@@ -531,6 +734,7 @@ async function handleCleanInvalidLinks() {
             linkSet.add(relNorm);
             matches.push({ idx: m.index, len: m[0].length, relRaw, relNorm });
           }
+          if (verboseList || (isVerbose() && matches.length)) debugLog('Scan file', { file: uri.fsPath, matches: matches.length });
           if (matches.length) {
             const doc = await vscode.workspace.openTextDocument(uri);
             for (const mm of matches) {
@@ -542,7 +746,7 @@ async function handleCleanInvalidLinks() {
           }
         } catch {}
         processed++;
-        if (processed % 25 === 0) progress.report({ message: `已解析 ${processed}/${texts.length} 个文件…` });
+        if (processed % 50 === 0) progress.report({ message: `已解析 ${processed}/${texts.length} 个文件…` });
       }
     }
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
@@ -566,6 +770,12 @@ async function handleCleanInvalidLinks() {
   }
   const allAssetFiles = scopeVal === 'workspace' ? await listAllFiles(assetsRootDir) : [];
   const assetRelSet = new Set(allAssetFiles.map((abs) => normalizeRel(path.relative(assetsRootDir, abs).replace(/\\/g, '/'))));
+  log('Assets files count', allAssetFiles.length);
+  if (allAssetFiles.length > 0) {
+    const sample = allAssetFiles.slice(0, 100).map(p => path.relative(assetsRootDir, p).replace(/\\/g, '/'));
+    debugLog('Assets files sample', { count: sample.length, files: sample });
+    if (allAssetFiles.length > 100) debugLog('Assets files sample truncated', allAssetFiles.length - 100);
+  }
 
   // 3) 计算坏链接与孤立附件
   // 文件存在性检查：
@@ -607,12 +817,22 @@ async function handleCleanInvalidLinks() {
       }
     }
   }));
+  log('Bad links', badLinks.length);
+  if (badLinks.length > 0) {
+    const sample = badLinks.slice(0, 20).map(b => ({ file: b.detail, rel: (b as any).payload?.relNorm }));
+    debugLog('Bad links sample', sample);
+  }
   const orphanAssets: { label: string; detail: string; action: 'delete'; payload: { abs: string } }[] = [];
   for (const abs of allAssetFiles) {
     const relNorm = normalizeRel(path.relative(assetsRoot, abs).replace(/\\/g, '/'));
     if (!linkSet.has(relNorm)) {
       orphanAssets.push({ label: `删除孤立附件: ${path.relative(assetsRoot, abs).replace(/\\/g, '/')}`, detail: `附件路径: ${abs}`, action: 'delete', payload: { abs } });
     }
+  }
+  log('Orphan assets', orphanAssets.length);
+  if (orphanAssets.length > 0) {
+    const sample = orphanAssets.slice(0, 20).map(a => a.payload.abs);
+    debugLog('Orphan assets sample', sample);
   }
 
   if (badLinks.length === 0 && orphanAssets.length === 0) {
@@ -636,47 +856,87 @@ async function handleCleanInvalidLinks() {
   const ok = await vscode.window.showWarningMessage('确认删除选中的项目吗？不可撤销（附件会被删除，链接文本将被移除）', { modal: true }, '确认删除', '取消');
   if (ok !== '确认删除') return;
 
-  // 5) 执行删除：
-  // - 链接：直接从文档移除对应 range 的文本
-  // - 附件：删除文件
-  for (const item of picks) {
-      if (item.action === 'unlink') {
-        const { uri, range } = (item as any).payload as { uri: vscode.Uri; range: vscode.Range };
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+  // 5) 执行删除：分批（按文件）应用 WorkspaceEdit，并展示细粒度进度
+  const unlinkItems = picks.filter((p: any) => p.action === 'unlink') as Array<{ action: 'unlink'; payload: { uri: vscode.Uri; range: vscode.Range } }>;
+  const fileDelItems = picks.filter((p: any) => p.action === 'delete') as Array<{ action: 'delete'; payload: { abs: string } }>;
+  const totalUnlink = unlinkItems.length;
+  const totalFileDel = fileDelItems.length;
+  const totalAll = totalUnlink + totalFileDel;
 
-        // 计算扩展删除范围：尽量把前导注释符号与空白一起删除
-        const line = doc.lineAt(range.start.line);
-        const lineText = line.text;
-        const before = lineText.slice(0, range.start.character);
-        const after = lineText.slice(range.end.character);
+  const sb = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+  sb.name = 'DocuSnap 清理进度';
+  const updateSB = (done: number, total: number) => {
+    sb.text = `DocuSnap: 已删除 ${done}/${total}（待删除 ${Math.max(0, total - done)}）`;
+    sb.show();
+  };
 
-        // 向左扩展：匹配末尾的 [空白][注释符（//|#|--|;|%）][可选空白]
-        let startCol = range.start.character;
-        const leftMatch = before.match(/(\s*)((?:\/\/)|#|--|;|%)\s*$/);
-        if (leftMatch) {
-          startCol = before.length - leftMatch[0].length;
-        } else if (/^\s*$/.test(before)) {
-          // 如果前面全是空白，从行首开始删
-          startCol = 0;
+  let deletedCount = 0;
+  try {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在删除选中项…', cancellable: true }, async (progress, token) => {
+      const report = () => {
+        progress.report({ message: `已删除 ${deletedCount}/${totalAll}（待删除 ${Math.max(0, totalAll - deletedCount)}）` });
+        updateSB(deletedCount, totalAll);
+      };
+      report();
+
+      // 5.1 文本链接删除：按文件分组，避免文档光标移动和编辑器打开
+      const byFile = new Map<string, Array<{ uri: vscode.Uri; range: vscode.Range }>>();
+      for (const it of unlinkItems) {
+        const { uri, range } = it.payload;
+        const key = uri.fsPath;
+        if (!byFile.has(key)) byFile.set(key, []);
+        byFile.get(key)!.push({ uri, range });
+      }
+      for (const [fsPath, arr] of byFile.entries()) {
+        if (token.isCancellationRequested) break;
+        try {
+          const uri = vscode.Uri.file(fsPath);
+          const doc = await vscode.workspace.openTextDocument(uri);
+          // 计算扩展删除范围
+          const expanded: vscode.Range[] = arr.map(({ range }) => {
+            const line = doc.lineAt(range.start.line);
+            const lineText = line.text;
+            const before = lineText.slice(0, range.start.character);
+            const after = lineText.slice(range.end.character);
+            let startCol = range.start.character;
+            const leftMatch = before.match(/(\s*)((?:\/\/)|#|--|;|%)\s*$/);
+            if (leftMatch) startCol = before.length - leftMatch[0].length; else if (/^\s*$/.test(before)) startCol = 0;
+            let endCol = range.end.character;
+            if (/^\s*$/.test(after)) endCol = lineText.length;
+            return new vscode.Range(new vscode.Position(range.start.line, startCol), new vscode.Position(range.end.line, endCol));
+          });
+          // 单次 WorkspaceEdit，避免偏移
+          const we = new vscode.WorkspaceEdit();
+          for (const r of expanded) we.delete(uri, r);
+          await vscode.workspace.applyEdit(we);
+          await doc.save();
+          deletedCount += arr.length;
+          debugLog('Deleted links in file', { file: fsPath, count: arr.length });
+        } catch {
+          // 忽略单文件失败，继续其他项
         }
+        report();
+      }
 
-        // 向右扩展：如果右侧只有空白，删到行尾
-        let endCol = range.end.character;
-        if (/^\s*$/.test(after)) {
-          endCol = lineText.length;
-        }
-
-        const delRange = new vscode.Range(new vscode.Position(range.start.line, startCol), new vscode.Position(range.end.line, endCol));
-        await editor.edit(b => b.delete(delRange));
-        await doc.save();
-    } else if (item.action === 'delete') {
-      const { abs } = (item as any).payload as { abs: string };
-      try { await fs.promises.unlink(abs); } catch {}
-    }
+      // 5.2 附件删除：逐个 unlink，随删随报进度
+      for (const it of fileDelItems) {
+        if (token.isCancellationRequested) break;
+        try { await fs.promises.unlink(it.payload.abs); } catch {}
+        deletedCount += 1;
+        debugLog('Deleted asset file', it.payload.abs);
+        report();
+      }
+    });
+  } finally {
+    sb.hide();
+    sb.dispose();
   }
 
-  vscode.window.showInformationMessage('清理完成。');
+  const msg = deletedCount >= totalAll
+    ? '清理完成。'
+    : `已取消。已删除 ${deletedCount}/${totalAll}`;
+  vscode.window.showInformationMessage(msg);
+  log('CleanInvalid: end', { deletedCount, totalAll });
 }
 
 // ---------- Clipboard image/document insert command (Windows) ----------
@@ -766,6 +1026,10 @@ async function handleInsertImageFromClipboard() {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  try {
+    const pkg = require('../package.json');
+    debugLog('DocuSnap activated', { version: (pkg && pkg.version) || 'unknown', buildTime: (pkg && (pkg as any)._buildTime) || 'dev' });
+  } catch {}
   context.subscriptions.push(
     // 新命令 ID（显示为 DocuSnap/注释快贴）
     vscode.commands.registerCommand('docusnap.insertImage', handleInsertImage),
@@ -775,6 +1039,69 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('docusnap.cleanInvalidLinks', handleCleanInvalidLinks),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, new AssetHoverProvider())
   );
+
+  // Show log command
+  context.subscriptions.push(vscode.commands.registerCommand('docusnap.showLog', () => {
+    const ch = getChannel();
+    ch.show(true);
+  }));
+
+  // Diagnostics command
+  context.subscriptions.push(vscode.commands.registerCommand('docusnap.diagnostics', async () => {
+    getChannel().show(true);
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    const assets = getAssetsDir();
+    const cfg = vscode.workspace.getConfiguration();
+    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+    const exts = Object.keys(map || {});
+    const excludes = getWorkspaceExcludes();
+    log('Diagnostics', { root: ws?.uri.fsPath, assetsDir: assets, exts, excludes });
+    if (ws) {
+      const include = exts.length ? [`**/*.{${exts.join(',')}}`] : ['**/*'];
+      const set = await collectWorkspaceFiles(include[0], excludes);
+      const sample = set.slice(0, 50).map(u => vscode.workspace.asRelativePath(u));
+      debugLog('Diagnostics candidates sample', { count: set.length, sample });
+    }
+  }));
+
+  // 侧边固定预览视图与命令
+  const previewProvider = new PinnedPreviewViewProvider(context);
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(PinnedPreviewViewProvider.viewId, previewProvider));
+  context.subscriptions.push(vscode.commands.registerCommand('docusnap.pinPreview', async (...args: any[]) => {
+    try {
+      let uri: vscode.Uri | undefined;
+      // VS Code 通过 markdown command 链接传参可能是：单个字符串/Uri、数组形式、或多参形式
+      const pick = ((): any => {
+        if (!args || args.length === 0) return undefined;
+        if (args.length === 1) return args[0];
+        return args[0];
+      })();
+      const first = Array.isArray(pick) ? pick[0] : pick;
+      if (first instanceof vscode.Uri) uri = first as vscode.Uri;
+      else if (typeof first === 'string' && first) { try { uri = vscode.Uri.parse(first as string); } catch {} }
+      if (!uri) {
+        const editor = vscode.window.activeTextEditor;
+        const doc = editor?.document;
+        if (doc && editor) {
+          const line = doc.lineAt(editor.selection.active.line).text;
+          const m = ASSET_TAG_LINK.exec(line);
+          if (m) {
+            const rel = normalizeRel(m[1] || m[2] || m[3] || m[4]);
+            const assetsRoot = getAssetsDir();
+            if (assetsRoot) uri = vscode.Uri.file(path.join(assetsRoot, rel));
+          }
+        }
+      }
+      if (!uri) return;
+      await vscode.commands.executeCommand('workbench.view.extension.docusnap');
+      // 关键：聚焦到具体预览视图，触发 resolveWebviewView
+      try { await vscode.commands.executeCommand('docusnap.preview.focus'); } catch {}
+      // 等待视图准备就绪
+      try { await Promise.race([previewProvider.ready, new Promise<void>(r => setTimeout(r, 800))]); } catch {}
+      previewProvider.setResource(uri);
+    } catch {}
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('docusnap.preview.clear', () => previewProvider.clear()));
 
   // 注册链接树视图
   const linksProvider = new LinksTreeProvider();
@@ -834,6 +1161,46 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 自动刷新（监听 assets 与文档变化）
   registerAutoRefresh(context, linksProvider);
+
+  // Comment Token Map 管理视图
+  const tokensProvider = new TokensTreeProvider();
+  const tokenView = vscode.window.createTreeView('docusnap.tokens', { treeDataProvider: tokensProvider });
+  context.subscriptions.push(tokenView);
+  // 当配置发生变化时自动刷新
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration('docuSnap.commentTokenMap')) {
+      tokensProvider.refresh();
+    }
+  }));
+  context.subscriptions.push(
+    vscode.commands.registerCommand('docusnap.tokens.refresh', () => tokensProvider.refresh()),
+    vscode.commands.registerCommand('docusnap.tokens.delete', async (node?: TokenNode) => {
+      if (!node) return;
+      const ok = await vscode.window.showWarningMessage(`确定删除扩展名 “.${node.ext}” 的注释符映射吗？`, { modal: true }, '删除');
+      if (ok !== '删除') return;
+      const cfg = vscode.workspace.getConfiguration();
+      const inspect = cfg.inspect<Record<string, string>>('docuSnap.commentTokenMap');
+      // 读取各层的对象
+      const folderVal = inspect?.workspaceFolderValue;
+      const wsVal = inspect?.workspaceValue;
+      const userVal = inspect?.globalValue;
+      let target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Workspace;
+      let base: Record<string, string> | undefined = undefined;
+      if (folderVal && node.ext in folderVal) { target = vscode.ConfigurationTarget.WorkspaceFolder; base = folderVal; }
+      else if (wsVal && node.ext in wsVal) { target = vscode.ConfigurationTarget.Workspace; base = wsVal; }
+      else if (userVal && node.ext in userVal) { target = vscode.ConfigurationTarget.Global; base = userVal; }
+      else {
+        // 如果都不包含，则从合并值中删除并写入工作区，避免污染用户默认
+        const merged = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+        base = merged;
+        target = vscode.ConfigurationTarget.Workspace;
+      }
+      const newMap: Record<string, string> = { ...(base || {}) };
+      delete newMap[node.ext];
+      await cfg.update('docuSnap.commentTokenMap', newMap, target);
+      tokensProvider.refresh();
+    })
+  );
 }
 
 export function deactivate() {}
@@ -933,8 +1300,10 @@ async function scanLinksAcrossWorkspace(): Promise<Map<string, LinkNode[]>> {
   if (!ws) return out;
 
   const cfg = vscode.workspace.getConfiguration();
-  const includeGlobs = cfg.get<string[]>('docuSnap.searchIncludeGlobs', ['**/*']);
-  const excludeGlobs = cfg.get<string[]>('docuSnap.searchExcludeGlobs', ['**/node_modules/**']);
+  const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+  const exts = Object.keys(map || {});
+  const includeGlobs = exts.length ? [`**/*.{${exts.join(',')}}`] : ['**/*'];
+  const excludeGlobs = getWorkspaceExcludes();
 
   const assetsRoot = getAssetsDir();
   const assetsRootDir = assetsRoot || '';
@@ -1059,6 +1428,32 @@ function registerAutoRefresh(context: vscode.ExtensionContext, provider: LinksTr
     watcher.onDidCreate(debounced);
     watcher.onDidDelete(debounced);
     context.subscriptions.push(watcher);
+  }
+}
+
+// ---------------- Tokens View ----------------
+class TokenNode extends vscode.TreeItem {
+  constructor(public readonly ext: string, public readonly token: string) {
+    super(`.${ext} → ${token}`, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = 'docusnap.token';
+    this.iconPath = new vscode.ThemeIcon('symbol-constant');
+    this.tooltip = `.${ext} uses '${token}'`;
+    // 展示内联删除按钮由菜单贡献点控制
+  }
+}
+
+class TokensTreeProvider implements vscode.TreeDataProvider<TokenNode> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<TokenNode | undefined | null | void>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  refresh(): void { this._onDidChangeTreeData.fire(); }
+  getTreeItem(el: TokenNode): vscode.TreeItem { return el; }
+  getChildren(): Thenable<TokenNode[]> {
+    const cfg = vscode.workspace.getConfiguration();
+    const map = cfg.get<Record<string, string>>('docuSnap.commentTokenMap', {});
+    const items = Object.entries(map || {}).map(([ext, token]) => new TokenNode(ext, token));
+    items.sort((a, b) => a.ext.localeCompare(b.ext));
+    return Promise.resolve(items);
   }
 }
 
