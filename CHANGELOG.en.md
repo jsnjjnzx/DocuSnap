@@ -1,5 +1,10 @@
 # Changelog · [中文](CHANGELOG.md)
 
+
+## [0.2.4] - 2025-09-16
+### Changes
+- Minor optimizations
+
 ## [0.2.3] - 2025-09-15
 ### Changes
 - Move to “rules as the single source of truth”: remove `docuSnap.commentTokenMap` and rely on `docuSnap.commentTokenRules` only.

@@ -1,5 +1,9 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.2.4] - 2025-09-16
+### 变更
+- 细节优化
+
 ## [0.2.3] - 2025-09-15
 ### 变更
 - 迁移为“规则唯一来源”：移除 `docuSnap.commentTokenMap`，仅使用 `docuSnap.commentTokenRules` 解析扩展名→注释符。
