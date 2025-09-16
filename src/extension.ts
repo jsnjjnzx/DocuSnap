@@ -10,6 +10,21 @@ import { exec } from 'child_process';
 // 支持半角/全角冒号 & 引号包裹路径
 const ASSET_TAG_LINK = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/;
 
+// 检测匹配位置前是否存在常见的行注释前缀，以降低误匹配风险
+function hasLineCommentPrefixBefore(content: string, matchStart: number, token?: string): boolean {
+  try {
+    const idx = Math.max(0, matchStart);
+    const lineStart = content.lastIndexOf('\n', idx - 1) + 1; // -1 => -1 + 1 => 0
+    const left = content.slice(lineStart, idx);
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tokenAlt = token ? `${esc(token)}|` : '';
+    const re = new RegExp(`(?:^|\\s)(?:${tokenAlt}\/\/|#|--|;|%)\\s*$`);
+    return re.test(left);
+  } catch {
+    return true; // 出错时不阻断匹配
+  }
+}
+
 // 规范化相对路径：去掉 ./ 或 / 前缀，\ -> /，Windows 下转小写
 function normalizeRel(p: string): string {
   let r = (p || '').trim();
@@ -30,10 +45,10 @@ function parseCommentTokenRules(rules: string[] | undefined): Record<string, str
     if (!s) continue;
     // Try two forms: {left}-{right} and {left}-{ {right} }
     const m = /^\{([^}]+)\}\s*-\s*(?:\{([^}]+)\}|(.+))$/u.exec(s);
-    if (!m) continue;
+    if (!m) { if (isVerbose()) debugLog('Invalid rule skipped', s); continue; }
     const left = m[1];
     const right = (m[2] ?? m[3] ?? '').trim();
-    if (!right) continue;
+    if (!right) { if (isVerbose()) debugLog('Empty right part in rule', s); continue; }
     const exts = left.split(',').map(x => x.trim()).filter(Boolean);
     for (const ext of exts) {
       const key = ext.replace(/^\./, '').toLowerCase();
@@ -404,17 +419,26 @@ class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
     const isImg = isImageExt(fsPath);
     if (isImg) {
       try {
-        const buf = fs.readFileSync(fsPath);
         const ext = path.extname(fsPath).toLowerCase();
-        const mime = ext === '.png' ? 'image/png'
-          : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg'
-          : ext === '.gif' ? 'image/gif'
-          : ext === '.svg' ? 'image/svg+xml'
-          : ext === '.webp' ? 'image/webp'
-          : 'application/octet-stream';
-        const b64 = buf.toString('base64');
+        // 优先使用 asWebviewUri（避免大尺寸 base64 造成内存占用；同时对 SVG 更安全）
+        const asWeb = webview.asWebviewUri(uri);
         const name = path.basename(fsPath);
-        return `<div class="path">${name}</div><img src="data:${mime};base64,${b64}" alt="asset" />`;
+        // 仅对非常小的位图（<32KB）尝试内嵌 base64，其他一律使用 asWebviewUri
+        if (ext !== '.svg') {
+          try {
+            const buf = fs.readFileSync(fsPath);
+            if (buf.byteLength <= 32 * 1024) {
+              const mime = ext === '.png' ? 'image/png'
+                : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg'
+                : ext === '.gif' ? 'image/gif'
+                : ext === '.webp' ? 'image/webp'
+                : 'application/octet-stream';
+              const b64 = buf.toString('base64');
+              return `<div class="path">${name}</div><img src="data:${mime};base64,${b64}" alt="asset" />`;
+            }
+          } catch { /* fall through to asWebviewUri */ }
+        }
+        return `<div class="path">${name}</div><img src="${asWeb}" alt="asset" />`;
       } catch {
         const asWeb = webview.asWebviewUri(uri);
         return `<img src="${asWeb}" alt="asset" />`;
@@ -775,7 +799,7 @@ async function handleCleanInvalidLinks() {
   const fileToLinks = new Map<string, { range: vscode.Range; relRaw: string; relNorm: string; uri: vscode.Uri; line: number }[]>();
 
   // 并发限制，避免一次性打开太多文件
-  const concurrency = Math.max(2, os.cpus()?.length ?? 4);
+  const concurrency = Math.min(8, Math.max(2, os.cpus()?.length ?? 4));
   const queue = [...texts];
   const verboseList = isVerbose() && texts.length <= 300; // 仅在详细模式时记录逐文件扫描
   await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '解析链接…', cancellable: true }, async (progress) => {
@@ -792,6 +816,10 @@ async function handleCleanInvalidLinks() {
           while ((m = re.exec(content))) {
             const relRaw = (m[1] || m[2] || m[3] || m[4]);
             const relNorm = normalizeRel(relRaw);
+            // 要求匹配前存在行注释前缀，降低误报
+            const ext = path.extname(uri.fsPath).toLowerCase().replace(/^\./, '');
+            const token = (map || {})[ext];
+            if (!hasLineCommentPrefixBefore(content, m.index, token)) continue;
             if (!isRelInAssets(relNorm, assetsRootDir)) continue;
             linkSet.add(relNorm);
             matches.push({ idx: m.index, len: m[0].length, relRaw, relNorm });
@@ -806,7 +834,9 @@ async function handleCleanInvalidLinks() {
               fileToLinks.get(uri.fsPath)!.push({ range, relRaw: mm.relRaw, relNorm: mm.relNorm, uri, line: start.line });
             }
           }
-        } catch {}
+        } catch (e: any) {
+          if (isVerbose()) debugLog('Scan error', { file: uri.fsPath, error: String(e?.message ?? e) });
+        }
         processed++;
         if (processed % 50 === 0) progress.report({ message: `已解析 ${processed}/${texts.length} 个文件…` });
       }
@@ -862,7 +892,7 @@ async function handleCleanInvalidLinks() {
   for (const [filePath, links] of fileToLinks.entries()) {
     for (const l of links) allLinkItems.push({ filePath, link: l });
   }
-  const existConcurrency = Math.max(4, os.cpus()?.length ?? 4);
+  const existConcurrency = Math.min(12, Math.max(4, os.cpus()?.length ?? 4));
   const existQueue = [...allLinkItems];
   await Promise.all(Array.from({ length: existConcurrency }, async () => {
     while (existQueue.length) {
@@ -974,7 +1004,8 @@ async function handleCleanInvalidLinks() {
           await doc.save();
           deletedCount += arr.length;
           debugLog('Deleted links in file', { file: fsPath, count: arr.length });
-        } catch {
+        } catch (e: any) {
+          if (isVerbose()) debugLog('Delete links in file failed', { file: fsPath, error: String(e?.message ?? e) });
           // 忽略单文件失败，继续其他项
         }
         report();
@@ -1421,6 +1452,10 @@ async function scanLinksAcrossWorkspace(): Promise<Map<string, LinkNode[]>> {
         while ((m = re.exec(content))) {
           const relRaw = (m[1] || m[2] || m[3] || m[4]);
           const relNorm = normalizeRel(relRaw);
+          // 要求匹配前存在行注释前缀，降低误报
+          const ext = path.extname(uri.fsPath).toLowerCase().replace(/^\./, '');
+          const token = (map || {})[ext];
+          if (!hasLineCommentPrefixBefore(content, m.index, token)) continue;
           if (!assetsRootDir || !isRelInAssets(relNorm, assetsRootDir)) continue;
           const line = content.slice(0, m.index).split(/\r?\n/).length - 1;
           const abs = assetsRootDir ? path.join(assetsRootDir, relNorm) : '';

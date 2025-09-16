@@ -10,7 +10,7 @@ DocuSnap lets you insert lightweight annotation tags in code comments like `@lin
 - Editor context menu:
   - Insert image for code description
   - Insert document for code description
-  - Insert image from clipboard (Windows)
+  - Insert image from clipboard (Windows only)
   - Smart Paste (optional Ctrl+V override): detect images or local file paths from clipboard with a 3-choice prompt: “Insert link / Rename & Insert / Normal paste”
   - If the current file extension is not configured in rules, insertion is blocked with a prompt guiding you to set `docuSnap.commentTokenRules`.
 - Single tag format in comments: `<line-comment-prefix> @link@:relative/path.ext`
@@ -19,13 +19,12 @@ DocuSnap lets you insert lightweight annotation tags in code comments like `@lin
   - SQL/Lua/Haskell: `-- @link@:images/foo.png`
   - MATLAB/Erlang: `% @link@:images/foo.png`
 - Hover preview:
-  - Images: rendered directly
+  - Images: loaded via URI by default (lower memory); tiny bitmaps may be inlined as base64; SVG always uses URI
   - Docs (md/txt): shows first 20 lines
   - Other types: link to open in editor
  - Sidebar views:
    - Links: list all `@link@` grouped by file; jump to code, filter missing-only, remove single link, clean current file
    - Preview: pin hover preview via the “📌 Pin Preview” action
-   - Tokens: manage mapping “extension → line comment token” (delete entries inline)
  - Clean invalid links:
    - Fast workspace scan respecting Files: Exclude / Search: Exclude / .gitignore
    - Concurrent parsing, batched WorkspaceEdit deletions, with progress and status bar updates

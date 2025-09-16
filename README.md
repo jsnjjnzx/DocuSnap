@@ -10,7 +10,7 @@
 - 右键编辑器：
   - 插入代码描述图片
   - 插入代码描述文档
-  - 从剪贴板插入代码描述图片（Windows）
+  - 从剪贴板插入代码描述图片（仅 Windows）
   - 智能粘贴（可选覆盖 Ctrl+V）：检测剪贴板中的图片/本地文件路径，支持“插入链接 / 重命名插入 / 普通粘贴”三选一
     - 当当前文件扩展名未配置注释规则时，插入会阻断并提示你前往设置配置 `docuSnap.commentTokenRules`
 - 标记格式（唯一）：`<注释前缀> @link@:relative/path.ext`
@@ -19,7 +19,7 @@
   - SQL/Lua/Haskell：`-- @link@:images/foo.png`
   - MATLAB/Erlang：`% @link@:images/foo.png`
 - 悬浮预览：
-  - 图片：直接显示
+  - 图片：默认以 URI 加载（更省内存），对很小的位图才会内联 base64；SVG 始终使用 URI
   - 文档（md/txt）：展示前 20 行片段
   - 其他类型：提供“在编辑器中打开”链接
  - 侧边视图：

@@ -2,7 +2,7 @@
 	"name": "docusnap-assets",
 		"displayName": "%displayName%",
 		"description": "%description%",
-	"version": "0.2.4",
+	"version": "0.2.5",
 	"publisher": "jsnjjnzx",
 	"license": "MIT",
 	"engines": {
@@ -179,11 +179,6 @@
 					"title": "%cmd.pinPreview%",
 					"category": "%category.title%"
 				},
-				{
-					"command": "docusnap.links.search",
-					"title": "%cmd.links.search%",
-					"category": "%category.title%"
-					},
 					{
 						"command": "docusnap.deleteCommentTokens",
 						"title": "%cmd.deleteTokens%",

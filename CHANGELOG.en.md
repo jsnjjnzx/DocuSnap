@@ -1,5 +1,12 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.5] - 2025-09-16
+### Fixes/Improvements
+- Fixed: duplicate command definition (`docusnap.links.search`) in `package.json` that caused duplicate entries in the Command Palette.
+- Preview: default to `asWebviewUri` for images, only inline tiny bitmaps as base64; always use URI for SVG for lower memory and better safety.
+- Links view scan: require a line-comment prefix before `@link@` to further reduce false positives.
+- More conservative concurrency caps and clearer debug logs (visible under `docuSnap.verboseLog`).
+
 
 ## [0.2.4] - 2025-09-16
 ### Changes

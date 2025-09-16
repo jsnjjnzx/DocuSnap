@@ -1,5 +1,12 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.2.5] - 2025-09-16
+### 修复/优化
+- 修复：`package.json` 中重复的命令定义（`docusnap.links.search`）导致命令面板重复显示的问题。
+- 优化：固定预览（Preview）对图片默认使用 `asWebviewUri`，仅对很小的位图使用 base64，SVG 始终走 URI，降低内存占用并更安全。
+- 优化：Links 视图的工作区扫描加入“行注释前缀校验”，进一步降低 `@link@` 误检。
+- 优化：保守的并发上限与更清晰的调试日志（在 `docuSnap.verboseLog` 下可见）。
+
 ## [0.2.4] - 2025-09-16
 ### 变更
 - 细节优化
