@@ -1,11 +1,27 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.6] - 2025-09-18
+### Added / Platform
+- Clipboard Insert now supports Windows / macOS / Linux:
+	- macOS: export clipboard image via pngpaste.
+	- Linux: prefer wl-clipboard (wl-paste), fallback to xclip; also reads text/uri-list for files.
+- README (EN/CN) updated with platform requirements.
+
 ## [0.2.5] - 2025-09-16
 ### Fixes/Improvements
 - Fixed: duplicate command definition (`docusnap.links.search`) in `package.json` that caused duplicate entries in the Command Palette.
 - Preview: default to `asWebviewUri` for images, only inline tiny bitmaps as base64; always use URI for SVG for lower memory and better safety.
 - Links view scan: require a line-comment prefix before `@link@` to further reduce false positives.
 - More conservative concurrency caps and clearer debug logs (visible under `docuSnap.verboseLog`).
+
+## [0.2.6] - 2025-09-18
+### Added
+- Cross-platform "Insert from clipboard" for images/documents:
+	- Windows: native support (as before)
+	- macOS: support via pngpaste for image export and file URL reads
+	- Linux: support via wl-clipboard (wl-paste) or xclip for image export and file list reads
+### Docs
+- README (EN/CN) updated with platform dependency notes.
 
 
 ## [0.2.4] - 2025-09-16

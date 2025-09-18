@@ -10,7 +10,7 @@ DocuSnap lets you insert lightweight annotation tags in code comments like `@lin
 - Editor context menu:
   - Insert image for code description
   - Insert document for code description
-  - Insert image from clipboard (Windows only)
+  - Insert image from clipboard (Windows / macOS / Linux)
   - Smart Paste (optional Ctrl+V override): detect images or local file paths from clipboard with a 3-choice prompt: “Insert link / Rename & Insert / Normal paste”
   - If the current file extension is not configured in rules, insertion is blocked with a prompt guiding you to set `docuSnap.commentTokenRules`.
 - Single tag format in comments: `<line-comment-prefix> @link@:relative/path.ext`
@@ -56,6 +56,11 @@ DocuSnap lets you insert lightweight annotation tags in code comments like `@lin
 3. “Rename & Insert” lets you rename files before copying into assets (auto-avoid name conflicts)
 
 ### Clean invalid links
+### Platform dependencies (Insert from clipboard)
+- Windows: built-in (via PowerShell APIs)
+- macOS: requires pngpaste (e.g., brew install pngpaste)
+- Linux: requires wl-clipboard (wl-paste) or xclip (Wayland or X11)
+
 1. Run “DocuSnap: Clean invalid links”
 2. Choose the scope (current file / entire workspace)
 3. Pick bad links and optionally orphan assets to delete, then confirm

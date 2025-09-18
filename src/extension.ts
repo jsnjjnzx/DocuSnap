@@ -464,6 +464,9 @@ function isWindows(): boolean {
   return process.platform === 'win32';
 }
 
+function isMac(): boolean { return process.platform === 'darwin'; }
+function isLinux(): boolean { return process.platform === 'linux'; }
+
 async function exportClipboardImageWindows(): Promise<string | undefined> {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
   const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
@@ -487,6 +490,114 @@ async function exportClipboardImageWindows(): Promise<string | undefined> {
       resolve(undefined);
     });
   });
+}
+
+// macOS: try pngpaste to export image
+async function exportClipboardImageMac(): Promise<string | undefined> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
+  const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
+  return new Promise<string | undefined>((resolve) => {
+    // pngpaste writes PNG to file; detect existence on success
+    exec(`pngpaste "${tmpPng}"`, async (error) => {
+      if (error) return resolve(undefined);
+      try {
+        const st = await fs.promises.stat(tmpPng);
+        if (st.size > 0) return resolve(tmpPng);
+      } catch {}
+      resolve(undefined);
+    });
+  });
+}
+
+// macOS: read file URLs from pasteboard via JXA (JavaScript for Automation)
+async function readClipboardFileListMac(): Promise<string[] | undefined> {
+  const jxa = [
+    'ObjC.import("AppKit");',
+    'var pb = $.NSPasteboard.generalPasteboard;',
+    'var items = pb.pasteboardItems;',
+    'var out = [];',
+    'if (items) {',
+    '  var n = items.count;',
+    '  for (var i = 0; i < n; i++) {',
+    '    var it = items.objectAtIndex(i);',
+    '    var s = it.stringForType("public.file-url");',
+    '    if (s) out.push(ObjC.unwrap(s));',
+    '  }',
+    '}',
+    'out.join("\n");'
+  ].join(' ');
+  return new Promise<string[] | undefined>((resolve) => {
+    exec(`osascript -l JavaScript -e '${jxa.replace(/'/g, "'\\''")}'`, (error, stdout) => {
+      if (error) return resolve(undefined);
+      const lines = String(stdout || '').split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return resolve(undefined);
+      const paths: string[] = [];
+      for (const u of lines) {
+        try {
+          const uri = new URL(u.trim());
+          if (uri.protocol === 'file:') {
+            const p = decodeURIComponent(uri.pathname);
+            paths.push(p);
+          }
+        } catch {}
+      }
+      resolve(paths.length ? paths : undefined);
+    });
+  });
+}
+
+// Linux: export image using wl-paste (Wayland) or xclip (X11)
+async function exportClipboardImageLinux(): Promise<string | undefined> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
+  const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
+  function tryWlPaste(): Promise<boolean> {
+    return new Promise((resolve) => {
+      exec(`sh -c "wl-paste -t image/png > \"${tmpPng}\" 2>/dev/null && [ -s \"${tmpPng}\" ] && echo OK"`, (err, stdout) => {
+        resolve(!err && /OK/.test(String(stdout)));
+      });
+    });
+  }
+  function tryXclip(): Promise<boolean> {
+    return new Promise((resolve) => {
+      exec(`sh -c "xclip -selection clipboard -t image/png -o > \"${tmpPng}\" 2>/dev/null && [ -s \"${tmpPng}\" ] && echo OK"`, (err, stdout) => {
+        resolve(!err && /OK/.test(String(stdout)));
+      });
+    });
+  }
+  if (await tryWlPaste()) return tmpPng;
+  if (await tryXclip()) return tmpPng;
+  return undefined;
+}
+
+// Linux: read text/uri-list via wl-paste or xclip
+async function readClipboardFileListLinux(): Promise<string[] | undefined> {
+  function tryWl(): Promise<string[] | undefined> {
+    return new Promise((resolve) => {
+      exec(`sh -c "wl-paste -t text/uri-list 2>/dev/null"`, (err, stdout) => {
+        if (err) return resolve(undefined);
+        const lines = String(stdout || '').split(/\r?\n/).filter(l => l && !l.startsWith('#'));
+        const out: string[] = [];
+        for (const l of lines) {
+          try { const u = new URL(l.trim()); if (u.protocol === 'file:') out.push(decodeURIComponent(u.pathname)); } catch {}
+        }
+        resolve(out.length ? out : undefined);
+      });
+    });
+  }
+  function tryX(): Promise<string[] | undefined> {
+    return new Promise((resolve) => {
+      exec(`sh -c "xclip -selection clipboard -t text/uri-list -o 2>/dev/null"`, (err, stdout) => {
+        if (err) return resolve(undefined);
+        const lines = String(stdout || '').split(/\r?\n/).filter(l => l && !l.startsWith('#'));
+        const out: string[] = [];
+        for (const l of lines) {
+          try { const u = new URL(l.trim()); if (u.protocol === 'file:') out.push(decodeURIComponent(u.pathname)); } catch {}
+        }
+        resolve(out.length ? out : undefined);
+      });
+    });
+  }
+  return await tryWl() || await tryX();
 }
 
 async function readClipboardFileDropListWindows(): Promise<string[] | undefined> {
@@ -1034,13 +1145,11 @@ async function handleCleanInvalidLinks() {
 
 // ---------- Clipboard image/document insert command (Windows) ----------
 async function handleInsertImageFromClipboard() {
-  if (!isWindows()) {
-    vscode.window.showWarningMessage('当前仅在 Windows 下支持从剪贴板插入图片/文档。');
-    return;
-  }
-
   // 1) 优先处理剪贴板中的文件列表（可包含图片与非图片文件）
-  const fileList = await readClipboardFileDropListWindows();
+  let fileList: string[] | undefined;
+  if (isWindows()) fileList = await readClipboardFileDropListWindows();
+  else if (isMac()) fileList = await readClipboardFileListMac();
+  else if (isLinux()) fileList = await readClipboardFileListLinux();
   if (fileList && fileList.length) {
     const uris: vscode.Uri[] = [];
     for (const f of fileList) {
@@ -1087,9 +1196,17 @@ async function handleInsertImageFromClipboard() {
   // 2) 若无文件列表，则尝试导出剪贴板图片
   let tmp: string | undefined;
   try {
-    tmp = await exportClipboardImageWindows();
+    if (isWindows()) tmp = await exportClipboardImageWindows();
+    else if (isMac()) tmp = await exportClipboardImageMac();
+    else if (isLinux()) tmp = await exportClipboardImageLinux();
     if (!tmp) {
-      vscode.window.showWarningMessage('剪贴板中没有可用的图片或文件。');
+      if (isMac()) {
+        vscode.window.showWarningMessage('未检测到剪贴板图片。若要从剪贴板插入图片，请先安装 pngpaste（brew install pngpaste）。');
+      } else if (isLinux()) {
+        vscode.window.showWarningMessage('未检测到剪贴板图片。请确保已安装 wl-clipboard（wl-paste）或 xclip，并复制图片到剪贴板后再试。');
+      } else {
+        vscode.window.showWarningMessage('剪贴板中没有可用的图片或文件。');
+      }
       return;
     }
     const wantRename = await vscode.window.showQuickPick(['重命名附件', '跳过重命名'], { placeHolder: '是否为即将插入的附件重命名？' });

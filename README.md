@@ -10,7 +10,7 @@
 - 右键编辑器：
   - 插入代码描述图片
   - 插入代码描述文档
-  - 从剪贴板插入代码描述图片（仅 Windows）
+  - 从剪贴板插入代码描述图片（Windows / macOS / Linux）
   - 智能粘贴（可选覆盖 Ctrl+V）：检测剪贴板中的图片/本地文件路径，支持“插入链接 / 重命名插入 / 普通粘贴”三选一
     - 当当前文件扩展名未配置注释规则时，插入会阻断并提示你前往设置配置 `docuSnap.commentTokenRules`
 - 标记格式（唯一）：`<注释前缀> @link@:relative/path.ext`
@@ -57,6 +57,11 @@
 3. 选择“重命名插入”可在复制入 assets 前为附件改名（自动避免重名冲突）
 
 ### 清理无效链接
+### 平台依赖（从剪贴板插入图片）
+- Windows：内置（使用 PowerShell API）
+- macOS：需要安装 pngpaste（例如：brew install pngpaste）
+- Linux：需要安装 wl-clipboard（wl-paste）或 xclip（Wayland 或 X11 环境）
+
 1. 命令面板执行 “DocuSnap: 清理无效链接”
 2. 选择范围（当前文件 / 整个工作区）
 3. 勾选要删除的坏链接与（可选）孤立附件，确认后自动批量删除

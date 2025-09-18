@@ -2,7 +2,8 @@
 	"name": "docusnap-assets",
 		"displayName": "%displayName%",
 		"description": "%description%",
-	"version": "0.2.5",
+	"version": "0.2.6",
+	"version": "0.2.6",
 	"publisher": "jsnjjnzx",
 	"license": "MIT",
 	"engines": {

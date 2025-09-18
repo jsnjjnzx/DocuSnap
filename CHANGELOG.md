@@ -1,11 +1,27 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.2.6] - 2025-09-18
+### 新增 / 平台
+- 剪贴板插入图片/文档现已支持 Windows / macOS / Linux：
+	- macOS 通过 pngpaste 导出剪贴板图片。
+	- Linux 优先使用 wl-clipboard（wl-paste），回退 xclip；可读取 text/uri-list 以获取文件。
+- README（中/英）补充平台依赖说明。
+
 ## [0.2.5] - 2025-09-16
 ### 修复/优化
 - 修复：`package.json` 中重复的命令定义（`docusnap.links.search`）导致命令面板重复显示的问题。
 - 优化：固定预览（Preview）对图片默认使用 `asWebviewUri`，仅对很小的位图使用 base64，SVG 始终走 URI，降低内存占用并更安全。
 - 优化：Links 视图的工作区扫描加入“行注释前缀校验”，进一步降低 `@link@` 误检。
 - 优化：保守的并发上限与更清晰的调试日志（在 `docuSnap.verboseLog` 下可见）。
+
+## [0.2.6] - 2025-09-18
+### 新增
+- 跨平台“从剪贴板插入图片/文档”：
+	- Windows：原生支持；
+	- macOS：支持通过 pngpaste 导出图片与读取文件 URL；
+	- Linux：支持通过 wl-clipboard（wl-paste）或 xclip 导出图片与读取文件列表。
+### 文档
+- README（中/英）更新平台依赖说明。
 
 ## [0.2.4] - 2025-09-16
 ### 变更
