@@ -507,6 +507,39 @@ async function handleSmartPaste() {
   if (!editor) return;
   const prefix = getLineCommentToken(editor.document);
 
+  // 0) 先快速读取文本剪贴板：如果是普通文本，直接走系统粘贴，避免昂贵的 PowerShell 探测
+  try {
+    const txt = await vscode.env.clipboard.readText();
+    const stripWrappingQuotes = (s: string): string => {
+      const t = s.trim();
+      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+        return t.slice(1, -1);
+      }
+      return t;
+    };
+    const hasAllowedExt = (s: string): boolean => /\.(png|jpg|jpeg|gif|svg|webp|md|txt|pdf)(\?|#|$)/i.test(s);
+    const looksLikeFilePath = (s: string): boolean => {
+      const t0 = s.trim();
+      if (!t0) return false;
+      const t = stripWrappingQuotes(t0);
+      if (!t) return false;
+      if (/^file:\/\//i.test(t)) return true; // 显式文件 URI
+      // Windows 盘符或 UNC，仅当包含允许扩展名才视为文件
+      if (/^[a-zA-Z]:\\|^\\\\/.test(t)) return hasAllowedExt(t);
+      // POSIX 风格路径（含 /、./、../ 开头），同样要求扩展名
+      if (/^(\.|\.\.)?\//.test(t)) return hasAllowedExt(t);
+      return false;
+    };
+    if (txt && txt.trim()) {
+      const trimmed = txt.trim();
+      // 若文本不像具体文件路径/URI，则直接快速粘贴
+      if (!looksLikeFilePath(trimmed)) {
+        await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+        return;
+      }
+    }
+  } catch { /* ignore and continue */ }
+
   // 收集候选：优先图片，其次文件列表，最后文本路径
   let foundType: 'image' | 'files' | 'paths' | undefined;
   let imgTmpPath: string | undefined;
@@ -520,17 +553,25 @@ async function handleSmartPaste() {
         'Add-Type -AssemblyName System.Windows.Forms;',
         'if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output "HAS" } else { Write-Output "NO" }'
       ].join(' ');
-      return await new Promise<boolean>((resolve) => {
+      const probe = new Promise<boolean>((resolve) => {
         exec(`powershell -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
           if (err) return resolve(false);
           resolve(/HAS/.test(String(stdout)));
         });
       });
+      // 超时保护：避免每次粘贴都被外部进程调用卡住
+      const timeout = new Promise<boolean>(res => setTimeout(() => res(false), 150));
+      return await Promise.race([probe, timeout]);
     })();
     if (hasImg) {
       foundType = 'image';
     } else {
-      const list = await readClipboardFileDropListWindows();
+      // 文件列表也加一个轻量超时保护
+      const list = await (async () => {
+        const p = readClipboardFileDropListWindows();
+        const t = new Promise<undefined>(res => setTimeout(() => res(undefined), 150));
+        return (await Promise.race([p, t])) as string[] | undefined;
+      })();
       if (list && list.length) {
         const uris: vscode.Uri[] = [];
         for (const f of list) {
@@ -550,7 +591,14 @@ async function handleSmartPaste() {
   if (!foundType) {
     const txt = await vscode.env.clipboard.readText();
     if (txt && txt.trim()) {
-      const candidates = txt.split(/\r?\n|\s+/).filter(Boolean);
+      const stripWrappingQuotes = (s: string): string => {
+        const t = s.trim();
+        if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+          return t.slice(1, -1);
+        }
+        return t;
+      };
+      const candidates = txt.split(/\r?\n|\s+/).filter(Boolean).map(stripWrappingQuotes);
       const uris: vscode.Uri[] = [];
       for (let c of candidates) {
         if (c.startsWith('file://')) {
@@ -559,7 +607,14 @@ async function handleSmartPaste() {
           } catch {}
         }
         const abs = asWorkspacePathMaybe(c);
-        if (abs && fs.existsSync(abs)) uris.push(vscode.Uri.file(abs));
+        if (abs) {
+          try {
+            const st = fs.statSync(abs);
+            const isFile = st.isFile();
+            const allowed = isFile && (isImagePath(abs) || /\.(md|txt|pdf)$/i.test(abs));
+            if (allowed) uris.push(vscode.Uri.file(abs));
+          } catch { /* ignore non-existing or permission issues */ }
+        }
       }
       if (uris.length) {
         foundType = 'paths';
@@ -572,7 +627,6 @@ async function handleSmartPaste() {
     const hint = foundType === 'image' ? '图片' : '文件';
     const choice = await vscode.window.showInformationMessage(
       `检测到剪贴板中有${hint}，是否插入 @link@ 链接？`,
-      { modal: true },
       '插入链接',
       '重命名插入',
       '普通粘贴'
