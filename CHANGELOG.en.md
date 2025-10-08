@@ -1,5 +1,18 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.2.5] - 2025-10-08
+### Performance
+- Noticeably faster Smart Paste when overriding Ctrl+V:
+	- Fast path for plain-text paste that skips external probes;
+	- Add ~150ms timeout to clipboard image/file probes to avoid blocking typing;
+	- Dialogs are non-modal to reduce interruption.
+
+### Behavior
+- Stricter text-path detection: only treat as a file when the path exists and is a supported type (png/jpg/jpeg/gif/svg/webp/md/txt/pdf); prevents mis-detecting directories or unrelated text.
+
+### CI
+- Publish workflow is now manual-only (workflow_dispatch). Regular pushes won’t trigger emails; use Actions -> Run workflow to publish.
+
 
 ## [0.2.4] - 2025-09-16
 ### Changes
