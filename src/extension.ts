@@ -461,37 +461,111 @@ function getPowerShellCommand(): string {
 }
 
 async function exportClipboardImageWindows(): Promise<string | undefined> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
-  const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
+  // 在 WSL 中，需要使用 Windows 的临时目录，而不是 WSL 的 /tmp
+  let tmpDir: string;
+  let tmpPng: string;
+  
+  if (isWSL()) {
+    // 使用 wslpath 命令获取 Windows TEMP 目录对应的 WSL 路径
+    const winTempPromise = new Promise<string>((resolve) => {
+      exec('cmd.exe /c echo %TEMP%', (err, stdout) => {
+        if (err) {
+          debugLog('exportClipboardImage: failed to get Windows TEMP', { error: err.message });
+          resolve('');
+          return;
+        }
+        const winTemp = stdout.trim();
+        debugLog('exportClipboardImage: Windows TEMP', { winTemp });
+        
+        // 将 Windows 路径转换为 WSL 路径
+        exec(`wslpath '${winTemp}'`, (err2, stdout2) => {
+          if (err2) {
+            debugLog('exportClipboardImage: wslpath failed', { error: err2.message });
+            resolve('');
+            return;
+          }
+          const wslTemp = stdout2.trim();
+          debugLog('exportClipboardImage: WSL temp path', { wslTemp });
+          resolve(wslTemp);
+        });
+      });
+    });
+    
+    const wslTempDir = await winTempPromise;
+    if (wslTempDir) {
+      tmpDir = await fs.promises.mkdtemp(path.join(wslTempDir, 'docusnap-'));
+    } else {
+      // 回退到 /tmp
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
+    }
+  } else {
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
+  }
+  
+  tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
+  debugLog('exportClipboardImage: tmpPng', { tmpPng, isWSL: isWSL() });
   
   // 在 WSL 中需要转换路径为 Windows 格式供 PowerShell 使用
   let savePath = tmpPng;
   if (isWSL()) {
-    // 将 WSL 路径转换为 Windows 路径
-    savePath = wslPathToWin(tmpPng);
+    // 使用 wslpath 命令转换为 Windows 路径
+    const winPathPromise = new Promise<string>((resolve) => {
+      exec(`wslpath -w '${tmpPng}'`, (err, stdout) => {
+        if (err) {
+          debugLog('exportClipboardImage: wslpath -w failed', { error: err.message });
+          resolve(tmpPng);
+          return;
+        }
+        const winPath = stdout.trim();
+        debugLog('exportClipboardImage: wslpath result', { wslPath: tmpPng, winPath });
+        resolve(winPath);
+      });
+    });
+    savePath = await winPathPromise;
   }
   // 统一使用正斜杠，避免转义问题
   savePath = savePath.replace(/\\/g, '/');
   
-  const psScript = [
-    '$ErrorActionPreference = "Stop";',
-    'Add-Type -AssemblyName System.Windows.Forms;',
-    'Add-Type -AssemblyName System.Drawing;',
-    'if ([System.Windows.Forms.Clipboard]::ContainsImage()) {',
-    '  $img = [System.Windows.Forms.Clipboard]::GetImage();',
-    '  $bmp = New-Object System.Drawing.Bitmap $img;',
-    `  $bmp.Save('${savePath}', [System.Drawing.Imaging.ImageFormat]::Png);`,
-    '  Write-Output "SAVED";',
-    '} else {',
-    '  Write-Output "NOIMAGE";',
-    '}'
-  ].join(' ');
+  const psScript = `
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+  $img = [System.Windows.Forms.Clipboard]::GetImage()
+  $bmp = New-Object System.Drawing.Bitmap $img
+  $bmp.Save('${savePath}', [System.Drawing.Imaging.ImageFormat]::Png)
+  Write-Output "SAVED"
+} else {
+  Write-Output "NOIMAGE"
+}
+`.trim();
   
+  // 使用 Base64 编码避免转义问题
+  const psScriptBase64 = Buffer.from(psScript, 'utf16le').toString('base64');
   const psCmd = getPowerShellCommand();
+  debugLog('exportClipboardImage: executing PowerShell', { psCmd, savePath });
+  
   return new Promise<string | undefined>((resolve) => {
-    exec(`${psCmd} -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
-      if (error) return resolve(undefined);
-      if (/SAVED/.test(stdout)) return resolve(tmpPng);
+    exec(`${psCmd} -NoProfile -STA -EncodedCommand ${psScriptBase64}`, (error, stdout, stderr) => {
+      if (error) {
+        debugLog('exportClipboardImage: error', { error: error.message, stderr });
+        return resolve(undefined);
+      }
+      const saved = /SAVED/.test(stdout);
+      debugLog('exportClipboardImage: result', { stdout: stdout.trim(), saved, tmpPng });
+      
+      // 验证文件是否真的存在
+      if (saved) {
+        try {
+          const exists = fs.existsSync(tmpPng);
+          debugLog('exportClipboardImage: file exists check', { tmpPng, exists });
+          if (exists) {
+            return resolve(tmpPng);
+          }
+        } catch (e) {
+          debugLog('exportClipboardImage: file check error', { error: (e as Error).message });
+        }
+      }
       resolve(undefined);
     });
   });
@@ -687,15 +761,25 @@ async function handleSmartPaste() {
   if (canUseWindowsClipboard()) {
     // 仅检测是否有图片（不立即导出）
     const hasImg = await (async () => {
-      const ps = [
-        '$ErrorActionPreference = "SilentlyContinue";',
-        'Add-Type -AssemblyName System.Windows.Forms;',
-        'if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output "HAS" } else { Write-Output "NO" }'
-      ].join(' ');
+      const psScript = `
+Add-Type -AssemblyName System.Windows.Forms
+if ([System.Windows.Forms.Clipboard]::ContainsImage()) { 
+  Write-Output "HAS" 
+} else { 
+  Write-Output "NO" 
+}
+`.trim();
+      
+      // 使用 Base64 编码避免转义问题
+      const psScriptBase64 = Buffer.from(psScript, 'utf16le').toString('base64');
       const psCmd = getPowerShellCommand();
       debugLog('SmartPaste: checking clipboard image', { psCmd });
+      
+      let resolved = false;
       const probe = new Promise<boolean>((resolve) => {
-        exec(`${psCmd} -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
+        exec(`${psCmd} -NoProfile -STA -EncodedCommand ${psScriptBase64}`, (err, stdout) => {
+          if (resolved) return; // 已经超时，忽略结果
+          resolved = true;
           if (err) {
             debugLog('SmartPaste: clipboard image check error', { error: err.message });
             return resolve(false);
@@ -705,8 +789,18 @@ async function handleSmartPaste() {
           resolve(hasImage);
         });
       });
-      // 超时保护：避免每次粘贴都被外部进程调用卡住
-      const timeout = new Promise<boolean>(res => setTimeout(() => res(false), 150));
+      
+      // 超时保护：WSL 环境需要更长时间（约 500ms），原生 Windows 也需要足够时间
+      const timeoutMs = isWSL() ? 800 : 500;
+      debugLog('SmartPaste: clipboard check timeout', { timeoutMs, isWSL: isWSL() });
+      const timeout = new Promise<boolean>(res => setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          debugLog('SmartPaste: clipboard check timeout reached');
+          res(false);
+        }
+      }, timeoutMs));
+      
       return await Promise.race([probe, timeout]);
     })();
     if (hasImg) {
@@ -715,7 +809,8 @@ async function handleSmartPaste() {
       // 文件列表也加一个轻量超时保护
       const list = await (async () => {
         const p = readClipboardFileDropListWindows();
-        const t = new Promise<undefined>(res => setTimeout(() => res(undefined), 150));
+        const timeoutMs = isWSL() ? 800 : 500;
+        const t = new Promise<undefined>(res => setTimeout(() => res(undefined), timeoutMs));
         return (await Promise.race([p, t])) as string[] | undefined;
       })();
       if (list && list.length) {
