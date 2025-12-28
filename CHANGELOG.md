@@ -1,5 +1,32 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.3.4] - 2025-12-28
+### 修复
+- **关键编译配置修复**：修复 TypeScript 编译输出路径问题
+  - 修正 `tsconfig.json` 中的 `rootDir` 从 `"."` 改为 `"src"`
+  - 确保编译输出 `out/extension.js` 与 `package.json` 的 `main` 字段匹配
+  - 解决了扩展加载旧代码导致日志和功能不生效的问题
+  
+### 说明
+- 此版本修复了 0.3.1-0.3.3 版本中由于编译配置错误导致的问题
+- VSCode 实际加载的是 `out/extension.js`，但之前编译输出到了 `out/src/extension.js`
+- 现在所有调试日志和功能改进都能正确生效
+
+## [0.3.1] - 2025-12-28
+### 修复
+- **WSL 剪贴板检测修复**：修复在 WSL 环境下无法检测剪贴板内容的问题
+  - 智能粘贴中的 PowerShell 命令现在正确使用 `getPowerShellCommand()`
+  - WSL 环境下自动使用 `powershell.exe` 而不是 `powershell`
+  
+### 改进
+- **增强调试日志**：添加更详细的剪贴板检测日志
+  - `canUseWindowsClipboard()` 记录平台和 WSL 检测结果
+  - `getPowerShellCommand()` 记录使用的命令
+  - 剪贴板图片检测记录执行过程和结果
+
+### 文档
+- 新增 `WSL测试指南.md`：详细的 WSL 环境问题诊断和解决方案
+
 ## [0.3.0] - 2025-12-28
 ### 新增
 - **WSL 支持**：完整支持在 WSL 环境下使用插件

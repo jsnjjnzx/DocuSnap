@@ -1,5 +1,32 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.3.4] - 2025-12-28
+### Fixed
+- **Critical Build Configuration Fix**: Fixed TypeScript compilation output path issue
+  - Corrected `rootDir` in `tsconfig.json` from `"."` to `"src"`
+  - Ensured compiled output `out/extension.js` matches `package.json` `main` field
+  - Resolved issue where extension loaded old code causing logs and features to not work
+
+### Notes
+- This version fixes issues in 0.3.1-0.3.3 caused by incorrect build configuration
+- VSCode actually loads `out/extension.js`, but previous builds output to `out/src/extension.js`
+- All debug logs and feature improvements now work correctly
+
+## [0.3.1] - 2025-12-28
+### Fixed
+- **WSL Clipboard Detection Fix**: Fixed clipboard content detection issue in WSL environment
+  - Smart paste now correctly uses `getPowerShellCommand()`
+  - Automatically uses `powershell.exe` instead of `powershell` in WSL
+
+### Improvements
+- **Enhanced Debug Logging**: Added more detailed clipboard detection logs
+  - `canUseWindowsClipboard()` logs platform and WSL detection results
+  - `getPowerShellCommand()` logs the command being used
+  - Clipboard image detection logs execution process and results
+
+### Documentation
+- Added `WSL测试指南.md`: Detailed WSL environment troubleshooting guide
+
 ## [0.3.0] - 2025-12-28
 ### Added
 - **WSL Support**: Full support for using the extension in WSL environments

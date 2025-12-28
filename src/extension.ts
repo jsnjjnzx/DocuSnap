@@ -442,7 +442,9 @@ function isWindows(): boolean {
 
 // 检查是否可以使用 Windows 剪贴板功能（原生 Windows 或 WSL）
 function canUseWindowsClipboard(): boolean {
-  return process.platform === 'win32' || isWSL();
+  const result = process.platform === 'win32' || isWSL();
+  debugLog('canUseWindowsClipboard', { platform: process.platform, isWSL: isWSL(), result });
+  return result;
 }
 
 // 获取 PowerShell 命令（WSL 中需要使用 powershell.exe）
@@ -452,6 +454,7 @@ function getPowerShellCommand(): string {
   }
   if (isWSL()) {
     // 在 WSL 中使用 powershell.exe 调用 Windows PowerShell
+    debugLog('getPowerShellCommand: using powershell.exe for WSL');
     return 'powershell.exe';
   }
   return 'powershell';
@@ -591,9 +594,31 @@ function normalizeForStat(p: string): string {
 }
 
 async function handleSmartPaste() {
+  // 立即显示一个信息提示，确认函数被调用
+  vscode.window.showInformationMessage('DocuSnap: handleSmartPaste 被调用了！');
+  console.log('[DocuSnap] handleSmartPaste called');
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return;
+  if (!editor) {
+    console.log('[DocuSnap] No active editor');
+    vscode.window.showWarningMessage('DocuSnap: 没有活动编辑器');
+    return;
+  }
   const prefix = getLineCommentToken(editor.document);
+  
+  // 无条件输出，用于调试
+  console.log('[DocuSnap] SmartPaste start', { 
+    platform: process.platform, 
+    isWSL: isWSL(), 
+    verboseLog: isVerbose() 
+  });
+  log('SmartPaste: start (unconditional)', { 
+    platform: process.platform, 
+    isWSL: isWSL(), 
+    verboseLog: isVerbose() 
+  });
+  
+  debugLog('SmartPaste: start', { platform: process.platform, isWSL: isWSL() });
+  
   // 统一在函数顶部声明候选，以便各分支可提前命中
   let foundType: 'image' | 'files' | 'paths' | undefined;
   let imgTmpPath: string | undefined;
@@ -602,6 +627,7 @@ async function handleSmartPaste() {
   // 0) 先快速读取文本剪贴板：如果是普通文本，直接走系统粘贴，避免昂贵的 PowerShell 探测
   try {
     const txt = await vscode.env.clipboard.readText();
+    debugLog('SmartPaste: clipboard text', { hasText: !!txt, length: txt?.length || 0 });
     const stripWrappingQuotes = (s: string): string => {
       const t = s.trim();
       if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
@@ -666,10 +692,17 @@ async function handleSmartPaste() {
         'Add-Type -AssemblyName System.Windows.Forms;',
         'if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output "HAS" } else { Write-Output "NO" }'
       ].join(' ');
+      const psCmd = getPowerShellCommand();
+      debugLog('SmartPaste: checking clipboard image', { psCmd });
       const probe = new Promise<boolean>((resolve) => {
-        exec(`powershell -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
-          if (err) return resolve(false);
-          resolve(/HAS/.test(String(stdout)));
+        exec(`${psCmd} -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
+          if (err) {
+            debugLog('SmartPaste: clipboard image check error', { error: err.message });
+            return resolve(false);
+          }
+          const hasImage = /HAS/.test(String(stdout));
+          debugLog('SmartPaste: clipboard image check result', { stdout: String(stdout).trim(), hasImage });
+          resolve(hasImage);
         });
       });
       // 超时保护：避免每次粘贴都被外部进程调用卡住
@@ -815,6 +848,8 @@ async function handleSmartPaste() {
   }
 
   // 未检测到可处理内容，回退到默认粘贴
+  console.log('[DocuSnap] SmartPaste fallback', { foundType });
+  log('SmartPaste final: fallback to plain paste (unconditional)', { foundType });
   debugLog('SmartPaste final: fallback to plain paste');
   await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
 }
