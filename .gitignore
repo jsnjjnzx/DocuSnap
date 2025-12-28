@@ -3,3 +3,9 @@ node_modules/
 out/
 .github/workflows/publish.yml
 .gitignore
+# 测试相关
+test-results/
+coverage/
+.nyc_output/
+*.log
+.vscode-test/

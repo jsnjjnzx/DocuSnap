@@ -1,5 +1,40 @@
 # Changelog · [中文](CHANGELOG.md)
 
+## [0.3.0] - 2025-12-28
+### Added
+- **WSL Support**: Full support for using the extension in WSL environments
+  - Automatic WSL environment detection
+  - Use `powershell.exe` to access Windows clipboard
+  - Automatic path conversion between Windows and WSL (`C:\path` ↔ `/mnt/c/path`)
+  - Clipboard image export, file list reading, and smart paste work seamlessly in WSL
+
+- **Automated Testing Framework**: Established comprehensive test infrastructure
+  - Unit tests: 18 tests covering path processing, WSL detection, comment rule parsing, etc.
+  - Integration tests: 10 tests covering extension activation, command registration, hover preview, link scanning, etc.
+  - Test tools: Quick test scripts, VSCode debug configuration, GitHub Actions CI/CD
+  - Test documentation: Detailed testing guides and usage instructions
+
+### Improvements
+- **Enhanced Path Processing**: Added `wslPathToWin()` function for WSL to Windows path conversion
+- **Optimized Clipboard Functions**: Unified `canUseWindowsClipboard()` detection supporting both native Windows and WSL
+- **PowerShell Call Optimization**: Automatically selects `powershell` or `powershell.exe` based on environment
+
+### Developer Experience
+- Added test commands: `npm run test:unit` (unit tests), `npm test` (integration tests)
+- Added quick test script: `node test/runQuickTest.js [unit|integration|all]`
+- Added VSCode debug configuration: Debug tests directly in IDE
+- Added GitHub Actions workflow: Automatically run tests on multiple platforms (Ubuntu, Windows, macOS)
+
+### Documentation
+- Added `test/README.md`: Test directory documentation
+- Added `测试指南.md`: Detailed testing guide
+- Added `测试实现总结.md`: Test implementation and coverage summary
+
+### Technical Debt
+- Updated TypeScript configuration: Support test file compilation
+- Added test dependencies: Mocha, Chai, @vscode/test-electron, etc.
+- Fixed activation event warnings in package.json
+
 ## [0.2.5] - 2025-10-08
 ### Performance
 - Noticeably faster Smart Paste when overriding Ctrl+V:

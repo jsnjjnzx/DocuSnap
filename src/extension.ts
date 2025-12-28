@@ -440,9 +440,36 @@ function isWindows(): boolean {
   return process.platform === 'win32';
 }
 
+// 检查是否可以使用 Windows 剪贴板功能（原生 Windows 或 WSL）
+function canUseWindowsClipboard(): boolean {
+  return process.platform === 'win32' || isWSL();
+}
+
+// 获取 PowerShell 命令（WSL 中需要使用 powershell.exe）
+function getPowerShellCommand(): string {
+  if (process.platform === 'win32') {
+    return 'powershell';
+  }
+  if (isWSL()) {
+    // 在 WSL 中使用 powershell.exe 调用 Windows PowerShell
+    return 'powershell.exe';
+  }
+  return 'powershell';
+}
+
 async function exportClipboardImageWindows(): Promise<string | undefined> {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
   const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
+  
+  // 在 WSL 中需要转换路径为 Windows 格式供 PowerShell 使用
+  let savePath = tmpPng;
+  if (isWSL()) {
+    // 将 WSL 路径转换为 Windows 路径
+    savePath = wslPathToWin(tmpPng);
+  }
+  // 统一使用正斜杠，避免转义问题
+  savePath = savePath.replace(/\\/g, '/');
+  
   const psScript = [
     '$ErrorActionPreference = "Stop";',
     'Add-Type -AssemblyName System.Windows.Forms;',
@@ -450,14 +477,16 @@ async function exportClipboardImageWindows(): Promise<string | undefined> {
     'if ([System.Windows.Forms.Clipboard]::ContainsImage()) {',
     '  $img = [System.Windows.Forms.Clipboard]::GetImage();',
     '  $bmp = New-Object System.Drawing.Bitmap $img;',
-    `  $bmp.Save('${tmpPng.replace(/\\/g, '/')}', [System.Drawing.Imaging.ImageFormat]::Png);`,
+    `  $bmp.Save('${savePath}', [System.Drawing.Imaging.ImageFormat]::Png);`,
     '  Write-Output "SAVED";',
     '} else {',
     '  Write-Output "NOIMAGE";',
     '}'
   ].join(' ');
+  
+  const psCmd = getPowerShellCommand();
   return new Promise<string | undefined>((resolve) => {
-    exec(`powershell -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
+    exec(`${psCmd} -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
       if (error) return resolve(undefined);
       if (/SAVED/.test(stdout)) return resolve(tmpPng);
       resolve(undefined);
@@ -477,12 +506,27 @@ async function readClipboardFileDropListWindows(): Promise<string[] | undefined>
     '  Write-Output "NOFILES";',
     '}'
   ].join(' ');
+  
+  const psCmd = getPowerShellCommand();
   return new Promise<string[] | undefined>((resolve) => {
-    exec(`powershell -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
+    exec(`${psCmd} -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
       if (error) return resolve(undefined);
       const lines = String(stdout || '').split(/\r?\n/).filter(Boolean);
       if (lines[0] !== 'FILES') return resolve(undefined);
-      resolve(lines.slice(1));
+      
+      // 在 WSL 中，需要将 Windows 路径转换为 WSL 路径
+      const paths = lines.slice(1);
+      if (isWSL()) {
+        return resolve(paths.map(p => {
+          // C:\path -> /mnt/c/path
+          if (/^[a-zA-Z]:\\/.test(p)) {
+            return p.replace(/^([a-zA-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`)
+                    .replace(/\\/g, '/');
+          }
+          return p;
+        }));
+      }
+      resolve(paths);
     });
   });
 }
@@ -491,7 +535,9 @@ function asWorkspacePathMaybe(p: string): string | undefined {
   if (!p) return undefined;
   const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   let abs = p;
-  if (!path.isAbsolute(abs)) {
+  // 兼容：即使在非 Windows 平台运行（如 WSL），也要把 `D:\` 或 `D:/`、UNC `\\server\share` 识别为绝对路径
+  const isWinAbs = /^[a-zA-Z]:[\\\/]/.test(abs) || /^\\\\/.test(abs);
+  if (!path.isAbsolute(abs) && !isWinAbs) {
     if (!ws) return undefined;
     abs = path.join(ws, abs);
   }
@@ -502,10 +548,56 @@ function isImagePath(p: string): boolean {
   return /(\.png|\.jpg|\.jpeg|\.gif|\.svg|\.webp)$/i.test(p);
 }
 
+function isWSL(): boolean {
+  if (process.platform !== 'linux') return false;
+  try {
+    if (process.env.WSL_DISTRO_NAME) return true;
+    const rel = require('os').release?.() || '';
+    if (/microsoft/i.test(rel)) return true;
+    const fsMod = require('fs');
+    if (fsMod.existsSync('/proc/sys/kernel/osrelease')) {
+      const txt = fsMod.readFileSync('/proc/sys/kernel/osrelease', 'utf8');
+      if (/microsoft/i.test(txt)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function winPathToWSL(p: string): string {
+  // d:\dir\file -> /mnt/d/dir/file
+  const m = /^([a-zA-Z]):[\\\/](.*)$/.exec(p);
+  if (!m) return p;
+  const drive = m[1].toLowerCase();
+  const rest = m[2].replace(/\\/g, '/');
+  return `/mnt/${drive}/${rest}`;
+}
+
+// WSL 路径转 Windows 路径
+function wslPathToWin(p: string): string {
+  // /mnt/d/dir/file -> D:\dir\file
+  const m = /^\/mnt\/([a-z])\/(.*)$/.exec(p);
+  if (!m) return p;
+  const drive = m[1].toUpperCase();
+  const rest = m[2].replace(/\//g, '\\');
+  return `${drive}:\\${rest}`;
+}
+
+function normalizeForStat(p: string): string {
+  if (!p) return p;
+  if (isWSL() && /^([a-zA-Z]):\\/.test(p)) {
+    return winPathToWSL(p);
+  }
+  return p;
+}
+
 async function handleSmartPaste() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
   const prefix = getLineCommentToken(editor.document);
+  // 统一在函数顶部声明候选，以便各分支可提前命中
+  let foundType: 'image' | 'files' | 'paths' | undefined;
+  let imgTmpPath: string | undefined;
+  let fileUris: vscode.Uri[] | undefined;
 
   // 0) 先快速读取文本剪贴板：如果是普通文本，直接走系统粘贴，避免昂贵的 PowerShell 探测
   try {
@@ -524,16 +616,38 @@ async function handleSmartPaste() {
       const t = stripWrappingQuotes(t0);
       if (!t) return false;
       if (/^file:\/\//i.test(t)) return true; // 显式文件 URI
-      // Windows 盘符或 UNC，仅当包含允许扩展名才视为文件
-      if (/^[a-zA-Z]:\\|^\\\\/.test(t)) return hasAllowedExt(t);
+      // Windows 盘符或 UNC（允许 \\ 或 /），仅当包含允许扩展名才视为文件
+      if (/^[a-zA-Z]:[\\\/]|^\\\\/.test(t)) return hasAllowedExt(t);
       // POSIX 风格路径（含 /、./、../ 开头），同样要求扩展名
       if (/^(\.|\.\.)?\//.test(t)) return hasAllowedExt(t);
       return false;
     };
     if (txt && txt.trim()) {
       const trimmed = txt.trim();
-      // 若文本不像具体文件路径/URI，则直接快速粘贴
-      if (!looksLikeFilePath(trimmed)) {
+
+      // 最优先快速命中：若是允许的后缀并且文件存在，直接作为“路径”候选
+      const t = stripWrappingQuotes(trimmed);
+      if (hasAllowedExt(t)) {
+        let p = t;
+        if (/^file:\/\//i.test(p)) {
+          try { p = vscode.Uri.parse(p).fsPath; } catch {}
+        }
+        const abs0 = asWorkspacePathMaybe(p) ?? p;
+        const statPath0 = normalizeForStat(abs0);
+        try {
+          const st = fs.statSync(statPath0);
+          if (st.isFile()) {
+            foundType = 'paths';
+            fileUris = [vscode.Uri.file(statPath0)];
+            debugLog('SmartPaste fast-check: early file-exists hit', { input: t, abs: abs0, statPath: statPath0 });
+          }
+        } catch {}
+      }
+
+      const fileish = looksLikeFilePath(trimmed);
+      debugLog('SmartPaste fast-check', { text: trimmed.length > 200 ? trimmed.slice(0,200) + '…' : trimmed, fileish, earlyFound: !!foundType });
+      // 若文本不像具体文件路径/URI，且也未通过“存在性”快速命中，则直接快速粘贴
+      if (!fileish && !foundType) {
         await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
         return;
       }
@@ -541,11 +655,10 @@ async function handleSmartPaste() {
   } catch { /* ignore and continue */ }
 
   // 收集候选：优先图片，其次文件列表，最后文本路径
-  let foundType: 'image' | 'files' | 'paths' | undefined;
-  let imgTmpPath: string | undefined;
-  let fileUris: vscode.Uri[] | undefined;
+  // 注意：若上面的“存在性快速命中”已设置 foundType，将直接跳过后续昂贵探测
+  if (!foundType) {
 
-  if (isWindows()) {
+  if (canUseWindowsClipboard()) {
     // 仅检测是否有图片（不立即导出）
     const hasImg = await (async () => {
       const ps = [
@@ -598,8 +711,10 @@ async function handleSmartPaste() {
         }
         return t;
       };
-      const candidates = txt.split(/\r?\n|\s+/).filter(Boolean).map(stripWrappingQuotes);
+  // 仅按换行拆分，避免把包含空格的 Windows 路径拆断
+  const candidates = txt.split(/\r?\n/).filter(Boolean).map(stripWrappingQuotes);
       const uris: vscode.Uri[] = [];
+      debugLog('SmartPaste text-path: candidates start');
       for (let c of candidates) {
         if (c.startsWith('file://')) {
           try {
@@ -608,22 +723,32 @@ async function handleSmartPaste() {
         }
         const abs = asWorkspacePathMaybe(c);
         if (abs) {
+          const statPath = normalizeForStat(abs);
           try {
-            const st = fs.statSync(abs);
+            const st = fs.statSync(statPath);
             const isFile = st.isFile();
-            const allowed = isFile && (isImagePath(abs) || /\.(md|txt|pdf)$/i.test(abs));
-            if (allowed) uris.push(vscode.Uri.file(abs));
+            const allowed = isFile && (isImagePath(abs) || /(\.md|\.txt|\.pdf)$/i.test(abs));
+            debugLog('SmartPaste text-path: checked', { input: c, abs, statPath, exists: true, isFile, allowed });
+            if (allowed) uris.push(vscode.Uri.file(statPath));
           } catch { /* ignore non-existing or permission issues */ }
+          if (!fs.existsSync(statPath)) {
+            debugLog('SmartPaste text-path: not exists', { input: c, abs, statPath });
+          }
         }
       }
       if (uris.length) {
         foundType = 'paths';
         fileUris = uris;
+        debugLog('SmartPaste text-path: found files', uris.map(u => u.fsPath));
+      } else {
+        debugLog('SmartPaste text-path: no usable files');
       }
     }
   }
+  } // end if (!foundType) block
 
   if (foundType) {
+    debugLog('SmartPaste final: foundType', foundType);
     const hint = foundType === 'image' ? '图片' : '文件';
     const choice = await vscode.window.showInformationMessage(
       `检测到剪贴板中有${hint}，是否插入 @link@ 链接？`,
@@ -684,11 +809,13 @@ async function handleSmartPaste() {
       return;
     }
     // 用户选择普通粘贴
+    debugLog('SmartPaste final: user chose plain paste');
     await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
     return;
   }
 
   // 未检测到可处理内容，回退到默认粘贴
+  debugLog('SmartPaste final: fallback to plain paste');
   await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
 }
 
@@ -1057,8 +1184,8 @@ async function handleCleanInvalidLinks() {
 
 // ---------- Clipboard image/document insert command (Windows) ----------
 async function handleInsertImageFromClipboard() {
-  if (!isWindows()) {
-    vscode.window.showWarningMessage('当前仅在 Windows 下支持从剪贴板插入图片/文档。');
+  if (!canUseWindowsClipboard()) {
+    vscode.window.showWarningMessage('当前仅在 Windows 或 WSL 环境下支持从剪贴板插入图片/文档。');
     return;
   }
 

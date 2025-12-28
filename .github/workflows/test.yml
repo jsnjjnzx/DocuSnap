@@ -1,0 +1,71 @@
+name: 自动化测试
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18.x, 20.x]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+    
+    - name: 设置 Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 编译代码
+      run: npm run compile
+    
+    - name: 运行单元测试
+      run: npm run test:unit
+    
+    - name: 运行集成测试 (Linux)
+      if: runner.os == 'Linux'
+      run: xvfb-run -a npm test
+    
+    - name: 运行集成测试 (Windows/macOS)
+      if: runner.os != 'Linux'
+      run: npm test
+    
+    - name: 上传测试结果
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.os }}-node-${{ matrix.node-version }}
+        path: |
+          test-results/
+          coverage/
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 编译检查
+      run: npm run compile

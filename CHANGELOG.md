@@ -1,5 +1,40 @@
 # 更新日志 · [English](CHANGELOG.en.md)
 
+## [0.3.0] - 2025-12-28
+### 新增
+- **WSL 支持**：完整支持在 WSL 环境下使用插件
+  - 自动检测 WSL 环境
+  - 使用 `powershell.exe` 访问 Windows 剪贴板
+  - 自动转换 Windows 路径和 WSL 路径（`C:\path` ↔ `/mnt/c/path`）
+  - 剪贴板图片导出、文件列表读取、智能粘贴等功能在 WSL 中正常工作
+
+- **自动化测试框架**：建立完整的测试体系
+  - 单元测试：18 个测试覆盖路径处理、WSL 检测、注释规则解析等核心功能
+  - 集成测试：10 个测试覆盖扩展激活、命令注册、悬浮预览、链接扫描等功能
+  - 测试工具：快速测试脚本、VSCode 调试配置、GitHub Actions CI/CD
+  - 测试文档：详细的测试指南和使用说明
+
+### 改进
+- **路径处理增强**：新增 `wslPathToWin()` 函数，支持 WSL 路径转 Windows 路径
+- **剪贴板功能优化**：统一的 `canUseWindowsClipboard()` 检测，支持原生 Windows 和 WSL
+- **PowerShell 调用优化**：根据环境自动选择 `powershell` 或 `powershell.exe`
+
+### 开发体验
+- 新增测试命令：`npm run test:unit`（单元测试）、`npm test`（集成测试）
+- 新增快速测试脚本：`node test/runQuickTest.js [unit|integration|all]`
+- 新增 VSCode 调试配置：可在 IDE 中直接调试测试
+- 新增 GitHub Actions 工作流：自动在多平台（Ubuntu、Windows、macOS）运行测试
+
+### 文档
+- 新增 `test/README.md`：测试目录说明
+- 新增 `测试指南.md`：详细的测试使用指南
+- 新增 `测试实现总结.md`：测试实现和覆盖率总结
+
+### 技术债务
+- 更新 TypeScript 配置：支持测试文件编译
+- 添加测试依赖：Mocha、Chai、@vscode/test-electron 等
+- 修复 package.json 中的激活事件警告
+
 ## [0.2.5] - 2025-10-08
 ### 性能
 - 覆盖 Ctrl+V 的“智能粘贴”明显提速：
