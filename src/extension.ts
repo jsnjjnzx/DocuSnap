@@ -460,72 +460,40 @@ function getPowerShellCommand(): string {
   return 'powershell';
 }
 
-async function exportClipboardImageWindows(): Promise<string | undefined> {
-  // 在 WSL 中，需要使用 Windows 的临时目录，而不是 WSL 的 /tmp
-  let tmpDir: string;
-  let tmpPng: string;
-  
-  if (isWSL()) {
-    // 使用 wslpath 命令获取 Windows TEMP 目录对应的 WSL 路径
-    const winTempPromise = new Promise<string>((resolve) => {
-      exec('cmd.exe /c echo %TEMP%', (err, stdout) => {
-        if (err) {
-          debugLog('exportClipboardImage: failed to get Windows TEMP', { error: err.message });
-          resolve('');
-          return;
-        }
-        const winTemp = stdout.trim();
-        debugLog('exportClipboardImage: Windows TEMP', { winTemp });
-        
-        // 将 Windows 路径转换为 WSL 路径
-        exec(`wslpath '${winTemp}'`, (err2, stdout2) => {
-          if (err2) {
-            debugLog('exportClipboardImage: wslpath failed', { error: err2.message });
-            resolve('');
-            return;
-          }
-          const wslTemp = stdout2.trim();
-          debugLog('exportClipboardImage: WSL temp path', { wslTemp });
-          resolve(wslTemp);
-        });
-      });
+async function wslToWindowsPath(wslPath: string): Promise<string> {
+  return new Promise((resolve) => {
+    exec(`wslpath -w "${wslPath}"`, (err, stdout) => {
+      if (err) return resolve(wslPath);
+      resolve(stdout.trim());
     });
-    
-    const wslTempDir = await winTempPromise;
-    if (wslTempDir) {
-      tmpDir = await fs.promises.mkdtemp(path.join(wslTempDir, 'docusnap-'));
-    } else {
-      // 回退到 /tmp
-      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
-    }
-  } else {
-    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
-  }
+  });
+}
+
+async function windowsToWslPath(winPath: string): Promise<string> {
+  return new Promise((resolve) => {
+    // Escape backslashes for the shell command
+    const escaped = winPath.replace(/\\/g, '\\\\');
+    exec(`wslpath -u "${escaped}"`, (err, stdout) => {
+      if (err) return resolve(winPath);
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function exportClipboardImageWindows(): Promise<string | undefined> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docusnap-'));
+  const tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
   
-  tmpPng = path.join(tmpDir, `clipboard-${Date.now()}.png`);
   debugLog('exportClipboardImage: tmpPng', { tmpPng, isWSL: isWSL() });
-  
-  // 在 WSL 中需要转换路径为 Windows 格式供 PowerShell 使用
+
   let savePath = tmpPng;
   if (isWSL()) {
-    // 使用 wslpath 命令转换为 Windows 路径
-    const winPathPromise = new Promise<string>((resolve) => {
-      exec(`wslpath -w '${tmpPng}'`, (err, stdout) => {
-        if (err) {
-          debugLog('exportClipboardImage: wslpath -w failed', { error: err.message });
-          resolve(tmpPng);
-          return;
-        }
-        const winPath = stdout.trim();
-        debugLog('exportClipboardImage: wslpath result', { wslPath: tmpPng, winPath });
-        resolve(winPath);
-      });
-    });
-    savePath = await winPathPromise;
+    savePath = await wslToWindowsPath(tmpPng);
+    debugLog('exportClipboardImage: converted path', { wslPath: tmpPng, winPath: savePath });
   }
   // 统一使用正斜杠，避免转义问题
   savePath = savePath.replace(/\\/g, '/');
-  
+
   const psScript = `
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
@@ -542,11 +510,11 @@ if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
   
   // 使用 Base64 编码避免转义问题
   const psScriptBase64 = Buffer.from(psScript, 'utf16le').toString('base64');
-  const psCmd = getPowerShellCommand();
-  debugLog('exportClipboardImage: executing PowerShell', { psCmd, savePath });
+  const cmd = getPowerShellCommand();
+  debugLog('exportClipboardImage: executing PowerShell', { psCmd: cmd, savePath });
   
   return new Promise<string | undefined>((resolve) => {
-    exec(`${psCmd} -NoProfile -STA -EncodedCommand ${psScriptBase64}`, (error, stdout, stderr) => {
+    exec(`${cmd} -NoProfile -STA -EncodedCommand ${psScriptBase64}`, (error, stdout, stderr) => {
       if (error) {
         debugLog('exportClipboardImage: error', { error: error.message, stderr });
         return resolve(undefined);
@@ -583,27 +551,18 @@ async function readClipboardFileDropListWindows(): Promise<string[] | undefined>
     '  Write-Output "NOFILES";',
     '}'
   ].join(' ');
-  
-  const psCmd = getPowerShellCommand();
   return new Promise<string[] | undefined>((resolve) => {
-    exec(`${psCmd} -NoProfile -STA -Command "${psScript}"`, (error, stdout) => {
+    const cmd = getPowerShellCommand();
+    exec(`${cmd} -NoProfile -STA -Command "${psScript}"`, async (error, stdout) => {
       if (error) return resolve(undefined);
       const lines = String(stdout || '').split(/\r?\n/).filter(Boolean);
       if (lines[0] !== 'FILES') return resolve(undefined);
-      
-      // 在 WSL 中，需要将 Windows 路径转换为 WSL 路径
-      const paths = lines.slice(1);
+
+      let files = lines.slice(1);
       if (isWSL()) {
-        return resolve(paths.map(p => {
-          // C:\path -> /mnt/c/path
-          if (/^[a-zA-Z]:\\/.test(p)) {
-            return p.replace(/^([a-zA-Z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`)
-                    .replace(/\\/g, '/');
-          }
-          return p;
-        }));
+        files = await Promise.all(files.map(f => windowsToWslPath(f)));
       }
-      resolve(paths);
+      resolve(files);
     });
   });
 }
@@ -642,21 +601,11 @@ function isWSL(): boolean {
 
 function winPathToWSL(p: string): string {
   // d:\dir\file -> /mnt/d/dir/file
-  const m = /^([a-zA-Z]):[\\\/](.*)$/.exec(p);
+  const m = /^([a-zA-Z]):\\(.*)$/.exec(p);
   if (!m) return p;
   const drive = m[1].toLowerCase();
   const rest = m[2].replace(/\\/g, '/');
   return `/mnt/${drive}/${rest}`;
-}
-
-// WSL 路径转 Windows 路径
-function wslPathToWin(p: string): string {
-  // /mnt/d/dir/file -> D:\dir\file
-  const m = /^\/mnt\/([a-z])\/(.*)$/.exec(p);
-  if (!m) return p;
-  const drive = m[1].toUpperCase();
-  const rest = m[2].replace(/\//g, '\\');
-  return `${drive}:\\${rest}`;
 }
 
 function normalizeForStat(p: string): string {
@@ -747,7 +696,8 @@ async function handleSmartPaste() {
       const fileish = looksLikeFilePath(trimmed);
       debugLog('SmartPaste fast-check', { text: trimmed.length > 200 ? trimmed.slice(0,200) + '…' : trimmed, fileish, earlyFound: !!foundType });
       // 若文本不像具体文件路径/URI，且也未通过“存在性”快速命中，则直接快速粘贴
-      if (!fileish && !foundType) {
+      // 注意：在 WSL 环境下，readText 可能读到旧的剪贴板内容，因此即使读到文本，也应继续检查 Windows 剪贴板是否有图片
+      if (!fileish && !foundType && !isWSL()) {
         await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
         return;
       }
@@ -759,27 +709,18 @@ async function handleSmartPaste() {
   if (!foundType) {
 
   if (canUseWindowsClipboard()) {
+    debugLog('SmartPaste: entering Windows clipboard check', { canUse: true, isWSL: isWSL() });
     // 仅检测是否有图片（不立即导出）
     const hasImg = await (async () => {
-      const psScript = `
-Add-Type -AssemblyName System.Windows.Forms
-if ([System.Windows.Forms.Clipboard]::ContainsImage()) { 
-  Write-Output "HAS" 
-} else { 
-  Write-Output "NO" 
-}
-`.trim();
-      
-      // 使用 Base64 编码避免转义问题
-      const psScriptBase64 = Buffer.from(psScript, 'utf16le').toString('base64');
-      const psCmd = getPowerShellCommand();
-      debugLog('SmartPaste: checking clipboard image', { psCmd });
-      
-      let resolved = false;
+      const ps = [
+        '$ErrorActionPreference = "SilentlyContinue";',
+        'Add-Type -AssemblyName System.Windows.Forms;',
+        'if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output "HAS" } else { Write-Output "NO" }'
+      ].join(' ');
       const probe = new Promise<boolean>((resolve) => {
-        exec(`${psCmd} -NoProfile -STA -EncodedCommand ${psScriptBase64}`, (err, stdout) => {
-          if (resolved) return; // 已经超时，忽略结果
-          resolved = true;
+        const cmd = getPowerShellCommand();
+        debugLog('SmartPaste: checking clipboard image', { psCmd: cmd });
+        exec(`${cmd} -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
           if (err) {
             debugLog('SmartPaste: clipboard image check error', { error: err.message });
             return resolve(false);
@@ -789,18 +730,13 @@ if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
           resolve(hasImage);
         });
       });
-      
       // 超时保护：WSL 环境需要更长时间（约 500ms），原生 Windows 也需要足够时间
       const timeoutMs = isWSL() ? 800 : 500;
       debugLog('SmartPaste: clipboard check timeout', { timeoutMs, isWSL: isWSL() });
       const timeout = new Promise<boolean>(res => setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          debugLog('SmartPaste: clipboard check timeout reached');
-          res(false);
-        }
+        debugLog('SmartPaste: clipboard check timeout reached');
+        res(false);
       }, timeoutMs));
-      
       return await Promise.race([probe, timeout]);
     })();
     if (hasImg) {
@@ -809,8 +745,7 @@ if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
       // 文件列表也加一个轻量超时保护
       const list = await (async () => {
         const p = readClipboardFileDropListWindows();
-        const timeoutMs = isWSL() ? 800 : 500;
-        const t = new Promise<undefined>(res => setTimeout(() => res(undefined), timeoutMs));
+        const t = new Promise<undefined>(res => setTimeout(() => res(undefined), 150));
         return (await Promise.race([p, t])) as string[] | undefined;
       })();
       if (list && list.length) {
@@ -943,8 +878,6 @@ if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
   }
 
   // 未检测到可处理内容，回退到默认粘贴
-  console.log('[DocuSnap] SmartPaste fallback', { foundType });
-  log('SmartPaste final: fallback to plain paste (unconditional)', { foundType });
   debugLog('SmartPaste final: fallback to plain paste');
   await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
 }
@@ -1314,8 +1247,8 @@ async function handleCleanInvalidLinks() {
 
 // ---------- Clipboard image/document insert command (Windows) ----------
 async function handleInsertImageFromClipboard() {
-  if (!canUseWindowsClipboard()) {
-    vscode.window.showWarningMessage('当前仅在 Windows 或 WSL 环境下支持从剪贴板插入图片/文档。');
+  if (!isWindows() && !isWSL()) {
+    vscode.window.showWarningMessage('当前仅在 Windows 下支持从剪贴板插入图片/文档。');
     return;
   }
 
