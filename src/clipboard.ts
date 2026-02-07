@@ -171,9 +171,7 @@ export async function readClipboardFileDropListWindows(): Promise<string[] | und
 }
 
 export async function handleSmartPaste() {
-    // 立即显示一个信息提示，确认函数被调用
-    vscode.window.showInformationMessage('DocuSnap: handleSmartPaste 被调用了！');
-    console.log('[DocuSnap] handleSmartPaste called');
+
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         console.log('[DocuSnap] No active editor');
