@@ -142,21 +142,28 @@ if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
     });
 }
 
+// 将 PowerShell 脚本转换为 Base64 编码，解决 WSL/CMD/PowerShell 多种环境下的转义问题
+function toEncodedCommand(script: string): string {
+    return Buffer.from(script, 'utf16le').toString('base64');
+}
+
 export async function readClipboardFileDropListWindows(): Promise<string[] | undefined> {
-    const psScript = [
-        '$ErrorActionPreference = "SilentlyContinue";',
-        'Add-Type -AssemblyName System.Windows.Forms;',
-        'if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {',
-        '  $list = [System.Windows.Forms.Clipboard]::GetFileDropList();',
-        '  Write-Output "FILES";',
-        '  foreach ($f in $list) { Write-Output $f }',
-        '} else {',
-        '  Write-Output "NOFILES";',
-        '}'
-    ].join(' ');
+    const psScript = `
+$ErrorActionPreference = "SilentlyContinue"
+Add-Type -AssemblyName System.Windows.Forms
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+  $list = [System.Windows.Forms.Clipboard]::GetFileDropList()
+  Write-Output "FILES"
+  foreach ($f in $list) { Write-Output $f }
+} else {
+  Write-Output "NOFILES"
+}
+`.trim();
+
     return new Promise<string[] | undefined>((resolve) => {
         const cmd = getPowerShellCommand();
-        exec(`${cmd} -NoProfile -STA -Command "${psScript}"`, async (error, stdout) => {
+        const encoded = toEncodedCommand(psScript);
+        exec(`${cmd} -NoProfile -NonInteractive -EncodedCommand ${encoded}`, async (error, stdout) => {
             if (error) return resolve(undefined);
             const lines = String(stdout || '').split(/\r?\n/).filter(Boolean);
             if (lines[0] !== 'FILES') return resolve(undefined);
@@ -169,6 +176,73 @@ export async function readClipboardFileDropListWindows(): Promise<string[] | und
         });
     });
 }
+
+
+/**
+ * 阶段三性能优化：合并图片与文件列表检测，减少 PowerShell 进程启动次数
+ */
+interface ClipboardProbeResult {
+    hasImage: boolean;
+    files?: string[];
+}
+
+async function probeWindowsClipboard(): Promise<ClipboardProbeResult> {
+    const isWslEnvironment = isWSL();
+    const psScript = `
+$ErrorActionPreference = "SilentlyContinue"
+Add-Type -AssemblyName System.Windows.Forms
+$res = @{ hasImage = $false; files = @() }
+if ([System.Windows.Forms.Clipboard]::ContainsImage()) { $res.hasImage = $true }
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+    $list = [System.Windows.Forms.Clipboard]::GetFileDropList()
+    foreach ($f in $list) { $res.files += $f }
+}
+$res | ConvertTo-Json -Compress
+`.trim();
+
+    const result = await new Promise<ClipboardProbeResult>((resolve) => {
+        const cmd = getPowerShellCommand();
+        const encoded = toEncodedCommand(psScript);
+        // EncodedCommand 默认是 STA 模式且不加载配置
+        const timeoutMs = isWslEnvironment ? 1500 : 1000;
+        let done = false;
+
+        const timer = setTimeout(() => {
+            if (!done) {
+                done = true;
+                debugLog('probeWindowsClipboard: timeout reached');
+                resolve({ hasImage: false });
+            }
+        }, timeoutMs);
+
+        exec(`${cmd} -NoProfile -NonInteractive -EncodedCommand ${encoded}`, async (err, stdout) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+
+            if (err) {
+                debugLog('probeWindowsClipboard: error', err.message);
+                return resolve({ hasImage: false });
+            }
+
+            try {
+                const out = String(stdout || '').trim();
+                const parsed = JSON.parse(out) as ClipboardProbeResult;
+                if (isWslEnvironment && parsed.files && parsed.files.length > 0) {
+                    parsed.files = await Promise.all(parsed.files.map(f => windowsToWslPath(f)));
+                }
+                resolve(parsed);
+            } catch (e) {
+                debugLog('probeWindowsClipboard: parse error', (e as Error).message);
+                resolve({ hasImage: false });
+            }
+        });
+    });
+
+    return result;
+}
+
+
 
 export async function handleSmartPaste() {
 
@@ -261,57 +335,22 @@ export async function handleSmartPaste() {
     if (!foundType) {
 
         if (canUseWindowsClipboard()) {
-            debugLog('SmartPaste: entering Windows clipboard check', { canUse: true, isWSL: isWSL() });
-            // 仅检测是否有图片（不立即导出）
-            const hasImg = await (async () => {
-                const ps = [
-                    '$ErrorActionPreference = "SilentlyContinue";',
-                    'Add-Type -AssemblyName System.Windows.Forms;',
-                    'if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output "HAS" } else { Write-Output "NO" }'
-                ].join(' ');
-                const probe = new Promise<boolean>((resolve) => {
-                    const cmd = getPowerShellCommand();
-                    debugLog('SmartPaste: checking clipboard image', { psCmd: cmd });
-                    exec(`${cmd} -NoProfile -STA -Command "${ps}"`, (err, stdout) => {
-                        if (err) {
-                            debugLog('SmartPaste: clipboard image check error', { error: err.message });
-                            return resolve(false);
-                        }
-                        const hasImage = /HAS/.test(String(stdout));
-                        debugLog('SmartPaste: clipboard image check result', { stdout: String(stdout).trim(), hasImage });
-                        resolve(hasImage);
-                    });
-                });
-                // 超时保护：WSL 环境需要更长时间（约 500ms），原生 Windows 也需要足够时间
-                const timeoutMs = isWSL() ? 800 : 500;
-                debugLog('SmartPaste: clipboard check timeout', { timeoutMs, isWSL: isWSL() });
-                const timeout = new Promise<boolean>(res => setTimeout(() => {
-                    debugLog('SmartPaste: clipboard check timeout reached');
-                    res(false);
-                }, timeoutMs));
-                return await Promise.race([probe, timeout]);
-            })();
-            if (hasImg) {
+            debugLog('SmartPaste: entering consolidated Windows clipboard probe');
+            const probe = await probeWindowsClipboard();
+
+            if (probe.hasImage) {
                 foundType = 'image';
-            } else {
-                // 文件列表也加一个轻量超时保护
-                const list = await (async () => {
-                    const p = readClipboardFileDropListWindows();
-                    const t = new Promise<undefined>(res => setTimeout(() => res(undefined), 150));
-                    return (await Promise.race([p, t])) as string[] | undefined;
-                })();
-                if (list && list.length) {
-                    const uris: vscode.Uri[] = [];
-                    for (const f of list) {
-                        if (!f) continue;
-                        try {
-                            if (fs.existsSync(f)) uris.push(vscode.Uri.file(f));
-                        } catch { }
-                    }
-                    if (uris.length) {
-                        foundType = 'files';
-                        fileUris = uris;
-                    }
+            } else if (probe.files && probe.files.length > 0) {
+                const uris: vscode.Uri[] = [];
+                for (const f of probe.files) {
+                    if (!f) continue;
+                    try {
+                        if (fs.existsSync(f)) uris.push(vscode.Uri.file(f));
+                    } catch { }
+                }
+                if (uris.length > 0) {
+                    foundType = 'files';
+                    fileUris = uris;
                 }
             }
         }

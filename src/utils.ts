@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export const ASSET_TAG_LINK = /@link@\s*[:：]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/;
 
@@ -42,7 +43,6 @@ export function isVerbose(): boolean {
 export function debugLog(...args: any[]) { if (isVerbose()) log(...args); }
 
 export async function ensureDir(dir: string): Promise<void> {
-    const fs = require('fs');
     await fs.promises.mkdir(dir, { recursive: true });
 }
 

@@ -2,6 +2,20 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 
 // ---- Comment token rules & map ----
+// 配置缓存
+let cachedCommentMap: Record<string, string> | undefined;
+let configListenerRegistered = false;
+
+function ensureConfigListener() {
+    if (configListenerRegistered) return;
+    configListenerRegistered = true;
+    vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('docuSnap.commentTokenRules')) {
+            cachedCommentMap = undefined;
+        }
+    });
+}
+
 // Support syntax like: {c,cpp,h}-{//} or {py,sh}-{#}
 function parseCommentTokenRules(rules: string[] | undefined): Record<string, string> {
     const map: Record<string, string> = {};
@@ -27,10 +41,13 @@ function parseCommentTokenRules(rules: string[] | undefined): Record<string, str
 
 export function getEffectiveCommentMap(): Record<string, string> {
     // Rules-only: compile rules to ext -> token map
+    ensureConfigListener();
+    if (cachedCommentMap) return cachedCommentMap;
     try {
         const cfg = vscode.workspace.getConfiguration();
         const rulesArr = cfg.get<string[]>('docuSnap.commentTokenRules', []);
-        return parseCommentTokenRules(rulesArr);
+        cachedCommentMap = parseCommentTokenRules(rulesArr);
+        return cachedCommentMap;
     } catch {
         return {};
     }

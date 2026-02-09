@@ -25,7 +25,7 @@ export class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
         if (assets) roots.push(vscode.Uri.file(assets));
         if (roots.length === 0) roots.push(this.context.extensionUri);
         webviewView.webview.options = { enableScripts: false, localResourceRoots: roots, retainContextWhenHidden: true } as any;
-        this.render();
+        void this.render();
         if (this._readyResolve) this._readyResolve();
     }
 
@@ -41,19 +41,19 @@ export class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
             try { roots.push(vscode.Uri.file(path.dirname(uri.fsPath))); } catch { /* noop */ }
             this._view.webview.options = { enableScripts: false, localResourceRoots: roots };
         }
-        this.render();
+        void this.render();
     }
 
     clear() {
         this._current = undefined;
-        this.render();
+        void this.render();
     }
 
-    private render() {
+    private async render() {
         if (!this._view) return;
         const webview = this._view.webview;
         const csp = `default-src 'none'; img-src ${webview.cspSource} file: data:; style-src 'unsafe-inline' ${webview.cspSource};`;
-        const body = this.renderBody(webview);
+        const body = await this.renderBody(webview);
         webview.html = `<!DOCTYPE html>
 <!doctype html>
 <html lang="zh-CN">
@@ -74,7 +74,7 @@ export class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
 </html>`;
     }
 
-    private renderBody(webview: vscode.Webview): string {
+    private async renderBody(webview: vscode.Webview): Promise<string> {
         if (!this._current) {
             return `<div class="hint">点击悬浮窗中的“📌 固定预览”将资源固定到此处。</div>`;
         }
@@ -83,7 +83,7 @@ export class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
         const isImg = isImageExt(fsPath);
         if (isImg) {
             try {
-                const buf = fs.readFileSync(fsPath);
+                const buf = await fs.promises.readFile(fsPath);
                 const ext = path.extname(fsPath).toLowerCase();
                 const mime = ext === '.png' ? 'image/png'
                     : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg'
@@ -101,7 +101,7 @@ export class PinnedPreviewViewProvider implements vscode.WebviewViewProvider {
         }
         if (/(\.md|\.txt)$/i.test(fsPath)) {
             try {
-                const txt = fs.readFileSync(fsPath, 'utf8');
+                const txt = await fs.promises.readFile(fsPath, 'utf8');
                 const esc = txt.replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[s]!));
                 const name = path.basename(fsPath);
                 return `<div class="path">${name}</div><pre>${esc}</pre>`;

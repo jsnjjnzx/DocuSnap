@@ -22,6 +22,34 @@ async function getTextForUri(uri: vscode.Uri): Promise<string> {
     return await readFileText(uri);
 }
 
+/**
+ * 阶段四性能优化：行号索引类，避免重复拆分字符串
+ */
+class LineIndex {
+    private lineOffsets: number[] = [];
+    constructor(content: string) {
+        this.lineOffsets = [0];
+        for (let i = 0; i < content.length; i++) {
+            if (content[i] === '\n') {
+                this.lineOffsets.push(i + 1);
+            }
+        }
+    }
+    public getLineNumber(offset: number): number {
+        let low = 0, high = this.lineOffsets.length - 1;
+        while (low <= high) {
+            const mid = (low + high) >> 1;
+            if (this.lineOffsets[mid] <= offset) {
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return high;
+    }
+}
+
+
 function findLinkRangeInDoc(doc: vscode.TextDocument, relNorm: string, nearLine?: number): vscode.Range | undefined {
     // Use regex from local or utils (utils is better but we use local regex in original code)
     // Let's use the one from utils but make sure it has 'g' flag if we loop.
@@ -101,6 +129,25 @@ export class LinksTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         this._onDidChangeTreeData.fire();
     }
 
+    /**
+     * 阶段四性能优化：增量更新单个文件
+     */
+    async refreshFile(uri: vscode.Uri): Promise<void> {
+        // 如果从未扫描过，由于 getChildren 会调用 ensureScanned，直接 refresh 即可
+        if (this.cache.size === 0) {
+            this.refresh();
+            return;
+        }
+        const updatedLinks = await scanLinksInFile(uri);
+        if (updatedLinks && updatedLinks.length > 0) {
+            this.cache.set(uri.fsPath, updatedLinks);
+        } else {
+            this.cache.delete(uri.fsPath);
+        }
+        this._onDidChangeTreeData.fire();
+    }
+
+
     toggleShowMissing(): void {
         this.showOnlyMissing = !this.showOnlyMissing;
         this._onDidChangeTreeData.fire();
@@ -177,28 +224,54 @@ async function scanLinksAcrossWorkspace(): Promise<Map<string, LinkNode[]>> {
             const uri = queue.shift()!;
             if (uri.fsPath.includes(`${path.sep}node_modules${path.sep}`)) continue;
             try {
-                const content = await getTextForUri(uri);
-                let m: RegExpExecArray | null;
-                re.lastIndex = 0;
-                const found: { relRaw: string; line: number; exists: boolean }[] = [];
-                while ((m = re.exec(content))) {
-                    const relRaw = (m[1] || m[2] || m[3] || m[4]);
-                    const relNorm = normalizeRel(relRaw);
-                    if (!assetsRootDir || !isRelInAssets(relNorm, assetsRootDir)) continue;
-                    const line = content.slice(0, m.index).split(/\r?\n/).length - 1;
-                    const abs = assetsRootDir ? path.join(assetsRootDir, relNorm) : '';
-                    const exists = assetsRootDir ? await fileExistsAbs(abs) : false;
-                    found.push({ relRaw, line, exists });
+                const links = await scanLinksInFile(uri);
+                if (links && links.length > 0) {
+                    out.set(uri.fsPath, links);
                 }
-                const items = out.get(uri.fsPath) || [];
-                for (const f of found) items.push(new LinkNode(uri, f.relRaw, f.line, f.exists));
-                if (items.length) out.set(uri.fsPath, items);
             } catch { }
         }
     }));
 
     return out;
 }
+
+/**
+ * 阶段四性能优化：提取单文件扫描逻辑，支持增量更新和行号索引
+ */
+async function scanLinksInFile(uri: vscode.Uri): Promise<LinkNode[]> {
+    const assetsRoot = getAssetsDir();
+    const assetsRootDir = assetsRoot || '';
+    if (!assetsRootDir) return [];
+
+    try {
+        const content = await getTextForUri(uri);
+        const re = new RegExp(ASSET_TAG_LINK.source, 'g');
+        const lineIndex = new LineIndex(content);
+        const results: LinkNode[] = [];
+
+        let m: RegExpExecArray | null;
+        re.lastIndex = 0;
+
+        async function fileExistsAbs(abs: string): Promise<boolean> {
+            try { const st = await fs.promises.stat(abs); return st.isFile() || st.isDirectory(); } catch { return false; }
+        }
+
+        while ((m = re.exec(content))) {
+            const relRaw = (m[1] || m[2] || m[3] || m[4]);
+            const relNorm = normalizeRel(relRaw);
+            if (!isRelInAssets(relNorm, assetsRootDir)) continue;
+
+            const line = lineIndex.getLineNumber(m.index);
+            const abs = path.join(assetsRootDir, relNorm);
+            const exists = await fileExistsAbs(abs);
+            results.push(new LinkNode(uri, relRaw, line, exists));
+        }
+        return results;
+    } catch {
+        return [];
+    }
+}
+
 
 // 针对单个文件执行清理坏链接
 export async function cleanInvalidLinksForFile(uri: vscode.Uri) {
@@ -247,6 +320,7 @@ export async function cleanInvalidLinksForFile(uri: vscode.Uri) {
         await editor.edit(b => b.delete(delRange));
     }
     await doc.save();
+    vscode.window.showInformationMessage(`已完成文件清理：共删除 ${selected.length} 条坏链接。`);
 }
 
 export async function handleCleanSingleLink(node: LinkNode) {
@@ -277,6 +351,7 @@ export async function handleCleanSingleLink(node: LinkNode) {
         const delRange = new vscode.Range(new vscode.Position(range.start.line, startCol), new vscode.Position(range.end.line, endCol));
         await editor.edit(b => b.delete(delRange));
         await doc.save();
+        vscode.window.showInformationMessage(`已删除坏链接：${node.relRaw}`);
     } catch (e) {
         vscode.window.showErrorMessage('清理链接失败：' + (e as Error).message);
     }
@@ -535,19 +610,20 @@ export async function handleCleanInvalidLinks() {
             report();
 
             // 5.1 文本链接删除：按文件分组，避免文档光标移动和编辑器打开
-            const byFile = new Map<string, Array<{ uri: vscode.Uri; range: vscode.Range }>>();
+            const byFile = new Map<string, Array<{ uri: vscode.Uri; range: vscode.Range; relRaw: string }>>();
             for (const it of unlinkItems) {
-                const { uri, range } = it.payload;
+                const { uri, range, relRaw } = it.payload as any;
                 const key = uri.fsPath;
                 if (!byFile.has(key)) byFile.set(key, []);
-                byFile.get(key)!.push({ uri, range });
+                byFile.get(key)!.push({ uri, range, relRaw });
             }
+
+            const cleanedLinksDetail: string[] = [];
             for (const [fsPath, arr] of byFile.entries()) {
                 if (token.isCancellationRequested) break;
                 try {
                     const uri = vscode.Uri.file(fsPath);
                     const doc = await vscode.workspace.openTextDocument(uri);
-                    // 计算扩展删除范围
                     const expanded: vscode.Range[] = arr.map(({ range }) => {
                         const line = doc.lineAt(range.start.line);
                         const lineText = line.text;
@@ -560,36 +636,57 @@ export async function handleCleanInvalidLinks() {
                         if (/^\s*$/.test(after)) endCol = lineText.length;
                         return new vscode.Range(new vscode.Position(range.start.line, startCol), new vscode.Position(range.end.line, endCol));
                     });
-                    // 单次 WorkspaceEdit，避免偏移
                     const we = new vscode.WorkspaceEdit();
                     for (const r of expanded) we.delete(uri, r);
                     await vscode.workspace.applyEdit(we);
                     await doc.save();
                     deletedCount += arr.length;
-                    debugLog('Deleted links in file', { file: fsPath, count: arr.length });
-                } catch {
-                    // 忽略单文件失败，继续其他项
-                }
+                    const relFile = vscode.workspace.asRelativePath(uri);
+                    cleanedLinksDetail.push(`${relFile}: 已清理 ${arr.length} 条坏链接 (${arr.map(a => a.relRaw).join(', ')})`);
+                } catch { }
                 report();
             }
 
-            // 5.2 附件删除：逐个 unlink，随删随报进度
+            // 5.2 附件删除
+            const cleanedAssetsDetail: string[] = [];
             for (const it of fileDelItems) {
                 if (token.isCancellationRequested) break;
-                try { await fs.promises.unlink(it.payload.abs); } catch { }
-                deletedCount += 1;
-                debugLog('Deleted asset file', it.payload.abs);
+                try {
+                    await fs.promises.unlink(it.payload.abs);
+                    deletedCount += 1;
+                    cleanedAssetsDetail.push(`删除附件: ${path.relative(assetsRootDir, it.payload.abs).replace(/\\/g, '/')}`);
+                } catch { }
                 report();
+            }
+
+            if (deletedCount > 0) {
+                const summary = [];
+                if (cleanedLinksDetail.length > 0) summary.push(`${byFile.size} 个文件中的 ${totalUnlink} 条链接`);
+                if (cleanedAssetsDetail.length > 0) summary.push(`${totalFileDel} 个孤立附件`);
+
+                const fullMsg = `清理完成。已删除 ${summary.join('，')}。`;
+                vscode.window.showInformationMessage(fullMsg, '查看明细').then(btn => {
+                    if (btn === '查看明细') {
+                        const output = vscode.window.createOutputChannel('DocuSnap Cleanup Details');
+                        output.appendLine('--- DocuSnap 清理明细 ---');
+                        if (cleanedLinksDetail.length > 0) {
+                            output.appendLine('\n[坏链接清理]');
+                            cleanedLinksDetail.forEach(d => output.appendLine(d));
+                        }
+                        if (cleanedAssetsDetail.length > 0) {
+                            output.appendLine('\n[孤立附件清理]');
+                            cleanedAssetsDetail.forEach(d => output.appendLine(d));
+                        }
+                        output.show();
+                    }
+                });
+            } else {
+                vscode.window.showInformationMessage('未执行任何清理操作。');
             }
         });
     } finally {
         sb.hide();
         sb.dispose();
     }
-
-    const msg = deletedCount >= totalAll
-        ? '清理完成。'
-        : `已取消。已删除 ${deletedCount}/${totalAll}`;
-    vscode.window.showInformationMessage(msg);
     log('CleanInvalid: end', { deletedCount, totalAll });
 }

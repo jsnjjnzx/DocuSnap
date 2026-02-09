@@ -8,22 +8,35 @@ import { PinnedPreviewViewProvider, AssetHoverProvider } from './views/preview';
 import { LinksTreeProvider, FileNode, LinkNode, handleCleanInvalidLinks, cleanInvalidLinksForFile, handleCleanSingleLink } from './views/linksTree';
 
 function registerAutoRefresh(context: vscode.ExtensionContext, provider: LinksTreeProvider) {
-  const debounced = (() => {
+  // 全量刷新防抖
+  const debouncedFull = (() => {
     let timer: NodeJS.Timeout | undefined;
     return () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => provider.refresh(), 500);
+      timer = setTimeout(() => provider.refresh(), 1200);
     };
   })();
 
-  // 文档变更/保存/打开
+  // 增量刷新防抖
+  const fileDebounceMap = new Map<string, NodeJS.Timeout>();
+  const debouncedFile = (uri: vscode.Uri) => {
+    const key = uri.fsPath;
+    const old = fileDebounceMap.get(key);
+    if (old) clearTimeout(old);
+    fileDebounceMap.set(key, setTimeout(() => {
+      fileDebounceMap.delete(key);
+      provider.refreshFile(uri);
+    }, 1200));
+  };
+
+  // 文档变更：增量刷新
   context.subscriptions.push(
-    vscode.workspace.onDidChangeTextDocument(debounced),
-    vscode.workspace.onDidSaveTextDocument(debounced),
-    vscode.workspace.onDidOpenTextDocument(debounced)
+    vscode.workspace.onDidChangeTextDocument(e => debouncedFile(e.document.uri)),
+    vscode.workspace.onDidSaveTextDocument(doc => debouncedFile(doc.uri)),
+    vscode.workspace.onDidOpenTextDocument(doc => debouncedFile(doc.uri))
   );
 
-  // 资产目录文件变化
+  // 资产目录文件变化：全量刷新
   const ws = vscode.workspace.workspaceFolders?.[0];
   const assetsRoot = getAssetsDir();
   if (ws && assetsRoot) {
@@ -32,9 +45,9 @@ function registerAutoRefresh(context: vscode.ExtensionContext, provider: LinksTr
     if (path.isAbsolute(rel)) rel = path.relative(root, rel);
     const pattern = new vscode.RelativePattern(ws, path.posix.join(rel.replace(/\\/g, '/'), '**/*'));
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-    watcher.onDidChange(debounced);
-    watcher.onDidCreate(debounced);
-    watcher.onDidDelete(debounced);
+    watcher.onDidChange(debouncedFull);
+    watcher.onDidCreate(debouncedFull);
+    watcher.onDidDelete(debouncedFull);
     context.subscriptions.push(watcher);
   }
 }
